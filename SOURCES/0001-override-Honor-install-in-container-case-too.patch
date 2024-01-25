@@ -1,0 +1,48 @@
+From f340dbbfd6a3acc8b85d487a32a78c4517ace1c4 Mon Sep 17 00:00:00 2001
+From: Colin Walters <walters@verbum.org>
+Date: Wed, 7 Dec 2022 20:14:06 -0500
+Subject: [PATCH] override: Honor `--install` in container case too
+
+Closes: https://github.com/coreos/rpm-ostree/issues/4192
+---
+ ci/test-container.sh                    | 8 ++++++--
+ src/app/rpmostree-override-builtins.cxx | 1 +
+ 2 files changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/ci/test-container.sh b/ci/test-container.sh
+index be0f9549..342808e4 100755
+--- a/ci/test-container.sh
++++ b/ci/test-container.sh
+@@ -84,11 +84,15 @@ rpm-ostree override replace --experimental --from repo=fedora-coreos-pool \
+ 
+ rpm -q afterburn-5.2.0-4.fc36.x86_64 afterburn-dracut-5.2.0-4.fc36.x86_64
+ 
+-# test repo override by pkgname
+-rpm-ostree override replace --experimental \
++# test repo override by pkgname, and also test --install
++if rpm -q strace; then
++  echo "strace should not be installed"; exit 1
++fi
++rpm-ostree override replace --install strace --experimental \
+   --from repo=copr:copr.fedorainfracloud.org:group_CoreOS:continuous \
+   afterburn \
+   afterburn-dracut
++rpm -q strace
+ 
+ # the continuous build's version has the git rev, prefixed with g
+ rpm -q afterburn | grep g
+diff --git a/src/app/rpmostree-override-builtins.cxx b/src/app/rpmostree-override-builtins.cxx
+index 41ab56f4..0c07ff53 100644
+--- a/src/app/rpmostree-override-builtins.cxx
++++ b/src/app/rpmostree-override-builtins.cxx
+@@ -204,6 +204,7 @@ handle_override (RPMOSTreeSysroot *sysroot_proxy, RpmOstreeCommandInvocation *in
+           CXX_TRY_VAR (pkgs, rpmostreecxx::stage_container_rpm_raw_fds (fds), error);
+           treefile->add_packages_override_replace_local (pkgs);
+         }
++      treefile->add_packages (util::rust_stringvec_from_strv (install_pkgs), true);
+       treefile->add_packages_override_remove (util::rust_stringvec_from_strv (override_remove));
+       return rpmostree_container_rebuild (*treefile, cancellable, error);
+     }
+-- 
+2.41.0
+
