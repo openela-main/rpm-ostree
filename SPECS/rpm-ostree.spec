@@ -3,7 +3,7 @@
 
 Summary: Hybrid image/package system
 Name: rpm-ostree
-Version: 2023.3
+Version: 2023.7
 Release: 1%{?dist}
 License: LGPLv2+
 URL: https://github.com/coreos/rpm-ostree
@@ -14,13 +14,9 @@ Source0: https://github.com/coreos/rpm-ostree/releases/download/v%{version}/rpm-
 ExclusiveArch: %{rust_arches}
 
 BuildRequires: make
-%if 0%{?rhel} && !0%{?eln}
-BuildRequires: rust-toolset
-%else
 BuildRequires: rust-packaging
 BuildRequires: cargo
 BuildRequires: rust
-%endif
 
 # Enable ASAN + UBSAN
 %bcond_with sanitizers
@@ -241,9 +237,33 @@ $PYTHON autofiles.py > files.devel \
 %files devel -f files.devel
 
 %changelog
+* Sat Aug 26 2023 Joseph Marrero <jmarrero@fedoraproject.org> - 2023.7-1
+- https://github.com/coreos/rpm-ostree/releases/tag/v2023.7
+  Resolves: rhbz#2234352
+
+* Fri Aug 25 2023 Joseph Marrero <jmarrero@fedoraproject.org> - 2023.6-1
+- https://github.com/coreos/rpm-ostree/releases/tag/v2023.6
+  Resolves: rhbz#2234352
+
+* Fri Jul 21 2023 Colin Walters <walters@verbum.org> - 2023.5-2
+- Backport https://github.com/coreos/rpm-ostree/pull/4510
+  Related: rhbz#2224081
+
+* Thu Jun 22 2023 Joseph Marrero <jmarrero@fedoraproject.org> - 2023.5-1
+- https://github.com/coreos/rpm-ostree/releases/tag/v2023.5
+  Resolves: rhbz#2216811
+
+* Tue Jun 13 2023 Joseph Marrero <jmarrero@fedoraproject.org> - 2023.4-1
+- https://github.com/coreos/rpm-ostree/releases/tag/v2023.4
+  Resolves: rhbz#2211486
+
 * Mon Apr 24 2023 Joseph Marrero <jmarrero@fedoraproject.org> - 2023.3-1
 - https://github.com/coreos/rpm-ostree/releases/tag/v2023.3
-  Resolves: rhbz#2192383
+  Resolves: rhbz#2189315
+
+* Tue Mar 07 2023 Joseph Marrero <jmarrero@fedoraproject.org> - 2023.2-1
+- https://github.com/coreos/rpm-ostree/releases/tag/v2023.2
+  Resolves: rhbz#2176213
 
 * Tue Dec 20 2022 Colin Walters <walters@verbum.org> - 2022.19-3
 - https://github.com/coreos/rpm-ostree/releases/tag/v2022.19
