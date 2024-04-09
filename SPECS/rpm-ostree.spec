@@ -4,7 +4,7 @@
 Summary:              Hybrid image/package system
 Name:                 rpm-ostree
 Version:              2022.10.117.g52714b51
-Release:              2%{?dist}
+Release:              3%{?dist}
 License:              LGPLv2+
 URL:                  https://github.com/coreos/rpm-ostree
 # This tarball is generated via "cd packaging && make -f Makefile.dist-packaging dist-snapshot"
@@ -51,7 +51,7 @@ BuildRequires:        rust
 %endif
 
 # For the autofiles bits below
-BuildRequires:        /usr/bin/python3
+BuildRequires:        python3-devel
 # We always run autogen.sh
 BuildRequires:        autoconf automake libtool git
 # For docs
@@ -194,8 +194,8 @@ for line in sys.argv[1:]:
         else:
             sys.stderr.write('{0} did not match any files\n'.format(line))
 EOF
-PYTHON=python3
-if ! test -x /usr/bin/python3; then
+PYTHON='%{python3}'
+if ! test -x '%{python3}'; then
     PYTHON=python2
 fi
 $PYTHON autofiles.py > files \
@@ -231,6 +231,10 @@ $PYTHON autofiles.py > files.devel \
 %files devel -f files.devel
 
 %changelog
+* Thu Oct 05 2023 Joseph Marrero <jmarrero@fedoraproject.org> - 2022.10.117.g52714b51-3
+- Use python macros and devel package
+  Resolves: #RHEL-2243
+
 * Mon Aug 07 2023 Joseph Marrero <jmarrero@fedoraproject.org> - 2022.10.117.g52714b51-2
 - Backport fb97c48f3 & eae7e1d8
   https://github.com/coreos/rpm-ostree/commit/fb97c48f3cd070c1ad559f3f43f86ad6548f6b02
