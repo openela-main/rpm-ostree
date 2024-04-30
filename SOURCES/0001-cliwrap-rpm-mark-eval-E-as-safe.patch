@@ -1,0 +1,56 @@
+From d02993e30078db2a04820065ccbf22bd56d0d064 Mon Sep 17 00:00:00 2001
+From: Jonathan Lebon <jonathan@jlebon.com>
+Date: Thu, 22 Feb 2024 14:44:50 -0500
+Subject: [PATCH] cliwrap/rpm: mark `--eval`/`-E` as safe
+
+This is sometimes used in scripts to query aspects of the host system.
+E.g. this is used by Fedora's pkg-config:
+
+https://src.fedoraproject.org/rpms/pkgconf/blob/95c0bbee/f/pkg-config.in#_6
+
+This in turn gets hit by kdump which runs dracut which has modules that
+runs `pkgconf` to query some directory paths.
+---
+ rust/src/cliwrap/rpm.rs | 19 +++++++++++++++++++
+ 1 file changed, 19 insertions(+)
+
+diff --git a/rust/src/cliwrap/rpm.rs b/rust/src/cliwrap/rpm.rs
+index c6ed5901..3332f76c 100644
+--- a/rust/src/cliwrap/rpm.rs
++++ b/rust/src/cliwrap/rpm.rs
+@@ -19,6 +19,12 @@ fn new_rpm_app() -> Command {
+                 .long("version")
+                 .action(clap::ArgAction::Version),
+         )
++        .arg(
++            Arg::new("eval")
++                .long("eval")
++                .short('E')
++                .action(clap::ArgAction::Set),
++        )
+         .arg(
+             Arg::new("package")
+                 .help("package")
+@@ -130,6 +136,19 @@ mod tests {
+         Ok(())
+     }
+ 
++    #[test]
++    fn test_eval() -> Result<()> {
++        assert_eq!(
++            disposition(SystemHostType::OstreeHost, &["-E", "%{_target_cpu}"])?,
++            RunDisposition::Ok
++        );
++        assert_eq!(
++            disposition(SystemHostType::OstreeHost, &["--eval=%{_target_cpu}}"])?,
++            RunDisposition::Ok
++        );
++        Ok(())
++    }
++
+     #[test]
+     fn test_query_file() -> Result<()> {
+         assert_eq!(
+-- 
+2.43.2
+

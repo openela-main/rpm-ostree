@@ -3,13 +3,15 @@
 
 Summary: Hybrid image/package system
 Name: rpm-ostree
-Version: 2023.7
+Version: 2024.3
 Release: 1%{?dist}
 License: LGPLv2+
 URL: https://github.com/coreos/rpm-ostree
 # This tarball is generated via "cd packaging && make -f Makefile.dist-packaging dist-snapshot"
 # in the upstream git.  It also contains vendored Rust sources.
 Source0: https://github.com/coreos/rpm-ostree/releases/download/v%{version}/rpm-ostree-%{version}.tar.xz
+
+Patch0: 0001-cliwrap-rpm-mark-eval-E-as-safe.patch
 
 ExclusiveArch: %{rust_arches}
 
@@ -39,7 +41,7 @@ BuildRequires: rust
 %endif
 
 # For the autofiles bits below
-BuildRequires: /usr/bin/python3
+BuildRequires: python3-devel
 # We always run autogen.sh
 BuildRequires: autoconf automake libtool git
 # For docs
@@ -200,8 +202,8 @@ for line in sys.argv[1:]:
         else:
             sys.stderr.write('{0} did not match any files\n'.format(line))
 EOF
-PYTHON=python3
-if ! test -x /usr/bin/python3; then
+PYTHON='%{python3}'
+if ! test -x '%{python3}'; then
     PYTHON=python2
 fi
 $PYTHON autofiles.py > files \
@@ -237,6 +239,35 @@ $PYTHON autofiles.py > files.devel \
 %files devel -f files.devel
 
 %changelog
+* Sun Feb 25 2024 Joseph Marrero <jmarrero@fedoraproject.org> - 2024.3-1
+- https://github.com/coreos/rpm-ostree/releases/tag/v2024.3
+  Backport https://github.com/coreos/rpm-ostree/commit/fe586621e5014d14f92b913338171a02ed29e6cc
+  Resolves: #RHEL-26186
+
+* Wed Jan 24 2024 Joseph Marrero <jmarrero@fedoraproject.org> - 2024.2-1
+- https://github.com/coreos/rpm-ostree/releases/tag/v2024.2
+  Resolves: #RHEL-11294
+
+* Wed Jan 03 2024 Colin Walters <walters@verbum.org> - 2024.1-2
+- https://github.com/coreos/rpm-ostree/releases/tag/v2024.1
+  Resolves: #RHEL-11294
+
+* Mon Dec 18 2023 Joseph Marrero <jmarrero@fedoraproject.org> - 2023.12-1
+- https://github.com/coreos/rpm-ostree/releases/tag/v2023.12
+  Resolves: #RHEL-11294
+
+* Wed Dec 13 2023 Joseph Marrero <jmarrero@fedoraproject.org> - 2023.11-1
+- https://github.com/coreos/rpm-ostree/releases/tag/v2023.11
+  Resolves: #RHEL-11294
+
+* Thu Oct 05 2023 Joseph Marrero <jmarrero@fedoraproject.org> - 2023.8-3
+- Use python macros and devel package
+  Resolves: #RHEL-11892
+
+* Mon Oct 02 2023 Colin Walters <walters@verbum.org> - 2023.8-2
+- https://github.com/coreos/rpm-ostree/releases/tag/v2023.8
+  https://issues.redhat.com/browse/RHEL-11294
+
 * Sat Aug 26 2023 Joseph Marrero <jmarrero@fedoraproject.org> - 2023.7-1
 - https://github.com/coreos/rpm-ostree/releases/tag/v2023.7
   Resolves: rhbz#2234352
