@@ -1,0 +1,83 @@
+From ef2638c1ffd77bc6fd9a80a92c965b06a8f284df Mon Sep 17 00:00:00 2001
+From: Jonathan Lebon <jonathan@jlebon.com>
+Date: Tue, 19 Mar 2024 15:20:43 -0400
+Subject: [PATCH 1/3] passwd: create `/etc/[g]shadow` with mode 0
+
+Because of how our composes work, we need to manually inject
+passwd-related things before installing packages. A somewhat recent
+regression in that area made it so that the `/etc/shadow` and
+`/etc/gshadow` files were created with default permissions (0644), which
+meant they were world readable.
+
+Fix this by explicitly setting their modes to 0. Ideally, we would rely
+on the canonical permissions set in the `setup` package here, but it's
+tricky to fix that without reworking how we install `setup` and handle
+`passwd` treefile options.
+
+Fixes fdb879c8 ("passwd: sync `etc/{,g}shadow` according to
+`etc/{passwd,group}`").
+
+Fixes #4401
+---
+ rust/src/passwd.rs             | 14 ++++++++++++++
+ tests/compose/libbasic-test.sh |  5 +++++
+ 2 files changed, 19 insertions(+)
+
+diff --git a/rust/src/passwd.rs b/rust/src/passwd.rs
+index 821497d8..a64f6468 100644
+--- a/rust/src/passwd.rs
++++ b/rust/src/passwd.rs
+@@ -418,6 +418,12 @@ fn write_data_from_treefile(
+     let db = rootfs.open(target_passwd_path).map(BufReader::new)?;
+     let shadow_name = target.shadow_file();
+     let target_shadow_path = format!("{}{}", dest_path, shadow_name);
++    // Ideally these permissions come from `setup`, which is the package
++    // that owns these files:
++    // https://src.fedoraproject.org/rpms/setup/blob/c6f58b338bd3/f/setup.spec#_96
++    // But at this point of the compose, the rootfs is completely empty; we
++    // haven't started unpacking things yet. So we need to hardcode it here.
++    let shadow_perms = cap_std::fs::Permissions::from_mode(0);
+ 
+     match target {
+         PasswdKind::User => {
+@@ -427,6 +433,10 @@ fn write_data_from_treefile(
+                     for user in entries {
+                         writeln!(target_shadow, "{}:*::0:99999:7:::", user.name)?;
+                     }
++                    target_shadow
++                        .get_mut()
++                        .as_file_mut()
++                        .set_permissions(shadow_perms)?;
+                     Ok(())
+                 })
+                 .with_context(|| format!("Writing {target_shadow_path}"))?;
+@@ -438,6 +448,10 @@ fn write_data_from_treefile(
+                     for group in entries {
+                         writeln!(target_shadow, "{}:::", group.name)?;
+                     }
++                    target_shadow
++                        .get_mut()
++                        .as_file_mut()
++                        .set_permissions(shadow_perms)?;
+                     Ok(())
+                 })
+                 .with_context(|| format!("Writing {target_shadow_path}"))?;
+diff --git a/tests/compose/libbasic-test.sh b/tests/compose/libbasic-test.sh
+index 78ad72b1..df790e89 100644
+--- a/tests/compose/libbasic-test.sh
++++ b/tests/compose/libbasic-test.sh
+@@ -22,6 +22,11 @@ validate_passwd group
+ ostree --repo=${repo} ls ${treeref} /usr/etc/passwd > passwd.txt
+ assert_file_has_content_literal passwd.txt '00644 '
+ 
++ostree --repo=${repo} ls ${treeref} /usr/etc/shadow > shadow.txt
++assert_file_has_content_literal shadow.txt '00000 '
++ostree --repo=${repo} ls ${treeref} /usr/etc/gshadow > gshadow.txt
++assert_file_has_content_literal gshadow.txt '00000 '
++
+ ostree --repo=${repo} cat ${treeref} /usr/etc/default/useradd > useradd.txt
+ assert_file_has_content_literal useradd.txt HOME=/var/home
+ 
+-- 
+2.44.0
+

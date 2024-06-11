@@ -4,7 +4,7 @@
 Summary: Hybrid image/package system
 Name: rpm-ostree
 Version: 2024.3
-Release: 1%{?dist}
+Release: 4%{?dist}
 License: LGPLv2+
 URL: https://github.com/coreos/rpm-ostree
 # This tarball is generated via "cd packaging && make -f Makefile.dist-packaging dist-snapshot"
@@ -12,6 +12,10 @@ URL: https://github.com/coreos/rpm-ostree
 Source0: https://github.com/coreos/rpm-ostree/releases/download/v%{version}/rpm-ostree-%{version}.tar.xz
 
 Patch0: 0001-cliwrap-rpm-mark-eval-E-as-safe.patch
+Patch1: 0001-passwd-create-etc-g-shadow-with-mode-0.patch
+Patch2: 0002-unit-chmod-etc-g-shadow-to-0000.patch
+Patch3: 0003-shadow-Adjust-all-deployments.patch
+Patch4: 0004-core-also-wrap-kernel-install-for-scriptlets.patch
 
 ExclusiveArch: %{rust_arches}
 
@@ -231,6 +235,13 @@ $PYTHON autofiles.py > files.devel \
   '%{_datadir}/gtk-doc/html/*' \
   '%{_datadir}/gir-1.0/*-1.0.gir'
 
+%post
+# Only enable on rpm-ostree based systems and manually force unit enablement to
+# explicitly ignore presets for this security fix
+if [ -e /run/ostree-booted ]; then
+    ln -snf /usr/lib/systemd/system/rpm-ostree-fix-shadow-mode.service  /usr/lib/systemd/system/multi-user.target.wants/
+fi
+
 %files -f files
 %doc COPYING.GPL COPYING.LGPL LICENSE README.md
 
@@ -239,6 +250,18 @@ $PYTHON autofiles.py > files.devel \
 %files devel -f files.devel
 
 %changelog
+* Fri May 10 2024 Joseph Marrero <jmarrero@fedoraproject.org> - 2024.3-4
+- Backport https://github.com/coreos/rpm-ostree/pull/4950
+  Resolves: #RHEL-36085
+
+* Tue Apr 16 2024 Joseph Marrero <jmarrero@fedoraproject.org> - 2024.3-3
+- Backport https://github.com/coreos/rpm-ostree/security/advisories/GHSA-2m76-cwhg-7wv6
+  Resolves: #RHEL-31852
+
+* Fri Apr 05 2024 Joseph Marrero <jmarrero@fedoraproject.org> - 2024.3-2
+- Backport https://github.com/coreos/rpm-ostree/security/advisories/GHSA-2m76-cwhg-7wv6
+  Resolves: #RHEL-31852
+
 * Sun Feb 25 2024 Joseph Marrero <jmarrero@fedoraproject.org> - 2024.3-1
 - https://github.com/coreos/rpm-ostree/releases/tag/v2024.3
   Backport https://github.com/coreos/rpm-ostree/commit/fe586621e5014d14f92b913338171a02ed29e6cc

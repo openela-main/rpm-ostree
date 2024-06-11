@@ -1,0 +1,314 @@
+From 1ec5618144e2d5e76caedba9cdcddb2d7ca1d8f7 Mon Sep 17 00:00:00 2001
+From: Colin Walters <walters@verbum.org>
+Date: Fri, 12 Apr 2024 12:59:54 -0400
+Subject: [PATCH 3/3] shadow: Adjust all deployments
+
+It was pointed out that in the previous change here we missed
+the fact that the previous deployments were accessible.
+
+- Move the logic into Rust, adding unit tests
+- Change the code to iterate over all deployments
+- Add an integration test too
+
+Note: A likely future enhancement here will be to finally
+deny unprivileged access to non-default roots; cc
+https://github.com/ostreedev/ostree/issues/3211
+---
+ rust/src/lib.rs                               |   2 +-
+ rust/src/main.rs                              |   1 +
+ rust/src/passwd.rs                            | 124 ++++++++++++++++++
+ src/daemon/rpm-ostree-fix-shadow-mode.service |  12 +-
+ tests/kolainst/destructive/shadow             |  80 +++++++++++
+ 5 files changed, 214 insertions(+), 5 deletions(-)
+ create mode 100755 tests/kolainst/destructive/shadow
+
+diff --git a/rust/src/lib.rs b/rust/src/lib.rs
+index e244158b..a65e669b 100644
+--- a/rust/src/lib.rs
++++ b/rust/src/lib.rs
+@@ -979,7 +979,7 @@ mod normalization;
+ mod origin;
+ mod ostree_prepareroot;
+ pub(crate) use self::origin::*;
+-mod passwd;
++pub mod passwd;
+ use passwd::*;
+ mod console_progress;
+ pub(crate) use self::console_progress::*;
+diff --git a/rust/src/main.rs b/rust/src/main.rs
+index 5a3c04d0..bf10d45d 100644
+--- a/rust/src/main.rs
++++ b/rust/src/main.rs
+@@ -28,6 +28,7 @@ async fn inner_async_main(args: Vec<String>) -> Result<i32> {
+             match *arg {
+                 // Add custom Rust commands here, and also in `libmain.cxx` if user-visible.
+                 "countme" => rpmostree_rust::countme::entrypoint(args).map(|_| 0),
++                "fix-shadow-perms" => rpmostree_rust::passwd::fix_shadow_perms_entrypoint(args).map(|_| 0),
+                 "cliwrap" => rpmostree_rust::cliwrap::entrypoint(args).map(|_| 0),
+                 // A hidden wrapper to intercept some binaries in RPM scriptlets.
+                 "scriptlet-intercept" => builtins::scriptlet_intercept::entrypoint(args).map(|_| 0),
+diff --git a/rust/src/passwd.rs b/rust/src/passwd.rs
+index a64f6468..f0a6da31 100644
+--- a/rust/src/passwd.rs
++++ b/rust/src/passwd.rs
+@@ -30,6 +30,10 @@ const DEFAULT_MODE: u32 = 0o644;
+ static DEFAULT_PERMS: Lazy<Permissions> = Lazy::new(|| Permissions::from_mode(DEFAULT_MODE));
+ static PWGRP_SHADOW_FILES: &[&str] = &["shadow", "gshadow", "subuid", "subgid"];
+ static USRLIB_PWGRP_FILES: &[&str] = &["passwd", "group"];
++// This stamp file signals the original fix which only changed the booted deployment
++const SHADOW_MODE_FIXED_STAMP_OLD: &str = "etc/.rpm-ostree-shadow-mode-fixed.stamp";
++// And this one is written by the newer logic that changes all deployments
++const SHADOW_MODE_FIXED_STAMP: &str = "etc/.rpm-ostree-shadow-mode-fixed2.stamp";
+ 
+ // Lock/backup files that should not be in the base commit (TODO fix).
+ static PWGRP_LOCK_AND_BACKUP_FILES: &[&str] = &[
+@@ -363,6 +367,86 @@ impl PasswdKind {
+     }
+ }
+ 
++/// Due to a prior bug, the build system had some deployments with a world-readable
++/// shadow file.  This fixes a given deployment.
++#[context("Fixing shadow permissions")]
++pub(crate) fn fix_shadow_perms_in_root(root: &Dir) -> Result<bool> {
++    let zero_perms = Permissions::from_mode(0);
++    let mut changed = false;
++    for path in ["etc/shadow", "etc/shadow-", "etc/gshadow", "etc/gshadow-"] {
++        let metadata = if let Some(meta) = root
++            .symlink_metadata_optional(path)
++            .context("Querying metadata")?
++        {
++            meta
++        } else {
++            tracing::debug!("No path {path}");
++            continue;
++        };
++        let mode = metadata.mode() & !libc::S_IFMT;
++        // Don't touch the file if it's already correct
++        if mode == 0 {
++            continue;
++        }
++        let f = root.open(path).with_context(|| format!("Opening {path}"))?;
++        f.set_permissions(zero_perms.clone())
++            .with_context(|| format!("chmod: {path}"))?;
++        println!("Adjusted mode for {path}");
++        changed = true;
++    }
++    // Write our stamp file
++    root.write(SHADOW_MODE_FIXED_STAMP, "")
++        .context(SHADOW_MODE_FIXED_STAMP)?;
++    // And clean up the old one
++    root.remove_file_optional(SHADOW_MODE_FIXED_STAMP_OLD)
++        .with_context(|| format!("Removing old {SHADOW_MODE_FIXED_STAMP_OLD}"))?;
++    Ok(changed)
++}
++
++/// Due to a prior bug, the build system had some deployments with a world-readable
++/// shadow file.  This fixes all deployments.
++pub(crate) fn fix_shadow_perms_in_sysroot(sysroot: &ostree::Sysroot) -> Result<bool> {
++    let deployments = sysroot.deployments();
++    // TODO add a nicer api for this to ostree-rs
++    let sysroot_fd =
++        Dir::reopen_dir(unsafe { &std::os::fd::BorrowedFd::borrow_raw(sysroot.fd()) })?;
++    let mut changed = false;
++    for deployment in deployments {
++        let path = sysroot.deployment_dirpath(&deployment);
++        let dir = sysroot_fd.open_dir(&path)?;
++        if fix_shadow_perms_in_root(&dir)
++            .with_context(|| format!("Deployment index={}", deployment.index()))?
++        {
++            println!(
++                "Adjusted shadow files in deployment index={} {}.{}",
++                deployment.index(),
++                deployment.csum(),
++                deployment.bootserial()
++            );
++            changed = true;
++        }
++    }
++    Ok(changed)
++}
++
++/// The main entrypoint for updating /etc/{,g}shadow permissions across
++/// all deployments.
++pub fn fix_shadow_perms_entrypoint(_args: &[&str]) -> Result<()> {
++    let cancellable = gio::Cancellable::NONE;
++    let sysroot = ostree::Sysroot::new_default();
++    sysroot.set_mount_namespace_in_use();
++    sysroot.lock()?;
++    sysroot.load(cancellable)?;
++    let changed = fix_shadow_perms_in_sysroot(&sysroot)?;
++    if changed {
++        // We already printed per deployment, so this one is just
++        // a debug-level log.
++        tracing::debug!("Updated shadow/gshadow permissions");
++    }
++    sysroot.unlock();
++    Ok(())
++}
++
+ // This function writes the static passwd/group data from the treefile to the
+ // target root filesystem.
+ fn write_data_from_treefile(
+@@ -1070,3 +1154,43 @@ impl PasswdEntries {
+         Ok(())
+     }
+ }
++
++#[test]
++fn test_shadow_perms() -> Result<()> {
++    let root = &cap_tempfile::tempdir(cap_std::ambient_authority())?;
++    root.create_dir("etc")?;
++    root.write("etc/shadow", "some shadow")?;
++    root.write("etc/gshadow", "some gshadow")?;
++    root.set_permissions("etc/gshadow", Permissions::from_mode(0))?;
++
++    assert!(fix_shadow_perms_in_root(root)?);
++    assert!(!root.try_exists(SHADOW_MODE_FIXED_STAMP_OLD)?);
++    assert!(root.try_exists(SHADOW_MODE_FIXED_STAMP)?);
++    // Verify idempotence
++    assert!(!fix_shadow_perms_in_root(root)?);
++    assert!(!root.try_exists(SHADOW_MODE_FIXED_STAMP_OLD)?);
++    assert!(root.try_exists(SHADOW_MODE_FIXED_STAMP)?);
++
++    Ok(())
++}
++
++#[test]
++/// Verify the scenario of updating from a previously fixed root
++fn test_shadow_perms_from_orig_fix() -> Result<()> {
++    let root = &cap_tempfile::tempdir(cap_std::ambient_authority())?;
++    root.create_dir("etc")?;
++    root.write("etc/shadow", "some shadow")?;
++    root.set_permissions("etc/shadow", Permissions::from_mode(0))?;
++    root.write("etc/gshadow", "some gshadow")?;
++    root.set_permissions("etc/gshadow", Permissions::from_mode(0))?;
++    // Write the original stamp file
++    root.write(SHADOW_MODE_FIXED_STAMP_OLD, "")?;
++
++    // No changes
++    assert!(!fix_shadow_perms_in_root(root)?);
++    // Except we should have updated to the new stamp file
++    assert!(!root.try_exists(SHADOW_MODE_FIXED_STAMP_OLD)?);
++    assert!(root.try_exists(SHADOW_MODE_FIXED_STAMP)?);
++
++    Ok(())
++}
+diff --git a/src/daemon/rpm-ostree-fix-shadow-mode.service b/src/daemon/rpm-ostree-fix-shadow-mode.service
+index 4aea7462..121bc74e 100644
+--- a/src/daemon/rpm-ostree-fix-shadow-mode.service
++++ b/src/daemon/rpm-ostree-fix-shadow-mode.service
+@@ -3,17 +3,21 @@
+ # This makes sure to fix permissions on systems that were deployed with the wrong permissions.
+ Description=Update permissions for /etc/shadow
+ Documentation=https://github.com/coreos/rpm-ostree-ghsa-2m76-cwhg-7wv6
+-ConditionPathExists=!/etc/.rpm-ostree-shadow-mode-fixed.stamp
++# This new stamp file is written by the Rust code, and obsoletes
++# the old /etc/.rpm-ostree-shadow-mode-fixed.stamp
++ConditionPathExists=!/etc/.rpm-ostree-shadow-mode-fixed2.stamp
+ ConditionPathExists=/run/ostree-booted
++# Because we read the sysroot
++RequiresMountsFor=/boot
+ # Make sure this is started before any unprivileged (interactive) user has access to the system.
+ Before=systemd-user-sessions.service
+ 
+ [Service]
+ Type=oneshot
+-ExecStart=chmod --verbose 0000 /etc/shadow /etc/gshadow
+-ExecStart=-chmod --verbose 0000 /etc/shadow- /etc/gshadow-
+-ExecStart=touch /etc/.rpm-ostree-shadow-mode-fixed.stamp
++ExecStart=rpm-ostree fix-shadow-perms
+ RemainAfterExit=yes
++# So we can remount /sysroot writable in our own namespace
++MountFlags=slave
+ 
+ [Install]
+ WantedBy=multi-user.target
+diff --git a/tests/kolainst/destructive/shadow b/tests/kolainst/destructive/shadow
+new file mode 100755
+index 00000000..7caf84c0
+--- /dev/null
++++ b/tests/kolainst/destructive/shadow
+@@ -0,0 +1,80 @@
++#!/bin/bash
++#
++# Copyright (C) 2024 Red Hat Inc.
++#
++# This library is free software; you can redistribute it and/or
++# modify it under the terms of the GNU Lesser General Public
++# License as published by the Free Software Foundation; either
++# version 2 of the License, or (at your option) any later version.
++#
++# This library is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++# Lesser General Public License for more details.
++#
++# You should have received a copy of the GNU Lesser General Public
++# License along with this library; if not, write to the
++# Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++# Boston, MA 02111-1307, USA.
++
++set -euo pipefail
++
++. ${KOLA_EXT_DATA}/libtest.sh
++
++set -x
++
++cd $(mktemp -d)
++
++service=rpm-ostree-fix-shadow-mode.service
++stamp=/etc/.rpm-ostree-shadow-mode-fixed2.stamp
++
++case "${AUTOPKGTEST_REBOOT_MARK:-}" in
++"")
++
++libtest_prepare_fully_offline
++libtest_enable_repover 0
++
++systemctl status ${service} || true
++rm -vf /etc/.rpm-ostree-shadow-mode*
++chmod 0644 /etc/gshadow
++
++# Verify running the service once fixes things
++systemctl restart $service
++assert_has_file "${stamp}"
++assert_streq "$(stat -c '%f' /etc/gshadow)" 8000
++
++# Now *undo* the fix, so that the current (then old) deployment
++# is broken still, and ensure after reboot that it's fixed
++# in both.
++
++chmod 0644 /etc/gshadow
++rm -vf /etc/.rpm-ostree*
++
++booted_commit=$(rpm-ostree status --json | jq -r '.deployments[0].checksum')
++ostree refs ${booted_commit} --create vmcheck2
++rpm-ostree rebase :vmcheck2
++
++/tmp/autopkgtest-reboot "1"
++;;
++"1")
++
++systemctl status $service
++assert_has_file "${stamp}"
++
++verified=0
++for f in $(ls /ostree/deploy/*/deploy/*/etc/{,g}shadow{,-}); do
++    verified=$(($verified + 1))
++    assert_streq "$(stat -c '%f' $f)" 8000
++    echo "ok ${f}"
++done
++assert_streq "$verified" 8
++
++journalctl -b -u $service --grep="Adjusted shadow files in deployment" | tee out.txt
++assert_streq "$(wc -l < out.txt)" 2
++
++echo "ok shadow"
++
++;;
++*) echo "unexpected mark: ${AUTOPKGTEST_REBOOT_MARK}"; exit 1;;
++
++esac
+-- 
+2.44.0
+

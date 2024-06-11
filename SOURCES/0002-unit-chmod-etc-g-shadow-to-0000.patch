@@ -1,0 +1,79 @@
+From 715298d909551b7d6b42ee6f9c38675f22034dde Mon Sep 17 00:00:00 2001
+From: jbtrystram <jbtrystram@redhat.com>
+Date: Thu, 21 Mar 2024 17:27:21 +0100
+Subject: [PATCH 2/3] unit: chmod /etc/[g]shadow[-] to 0000
+
+fdb879c introduced a regression where /etc/[g]shadow[-] files where
+created with default permissions: 0644
+
+This unit chmods /etc/shadow, /etc/gshadow and backup copies to 0000
+before interactive login is allowed on a system.
+
+This will fix the systems that were deployed with the above issue.
+
+We keep the stamp in /etc to account for the case where a deployment
+with this unit is rolled back. If we used /var, the stamp would have
+stayed but the fix would not be re-applied on the next update.
+---
+ Makefile-daemon.am                            |  1 +
+ packaging/rpm-ostree.spec.in                  |  5 +++++
+ src/daemon/rpm-ostree-fix-shadow-mode.service | 19 +++++++++++++++++++
+ 3 files changed, 25 insertions(+)
+ create mode 100644 src/daemon/rpm-ostree-fix-shadow-mode.service
+
+diff --git a/Makefile-daemon.am b/Makefile-daemon.am
+index 4233d90d..f96f49a9 100644
+--- a/Makefile-daemon.am
++++ b/Makefile-daemon.am
+@@ -60,6 +60,7 @@ systemdunit_service_file_names = \
+ 	rpm-ostreed-automatic.service \
+ 	rpm-ostree-bootstatus.service \
+ 	rpm-ostree-countme.service \
++	rpm-ostree-fix-shadow-mode.service \
+ 	$(NULL)
+ 
+ systemdunit_service_files = $(addprefix $(srcdir)/src/daemon/,$(systemdunit_service_file_names))
+diff --git a/packaging/rpm-ostree.spec.in b/packaging/rpm-ostree.spec.in
+index e83db7f3..cbe3e031 100644
+--- a/packaging/rpm-ostree.spec.in
++++ b/packaging/rpm-ostree.spec.in
+@@ -237,6 +237,11 @@ $PYTHON autofiles.py > files.devel \
+ # Setup rpm-ostree-countme.timer according to presets
+ %post
+ %systemd_post rpm-ostree-countme.timer
++# Only enable on rpm-ostree based systems and manually force unit enablement to
++# explicitly ignore presets for this security fix
++if [ -e /run/ostree-booted ]; then
++    ln -snf /usr/lib/systemd/system/rpm-ostree-fix-shadow-mode.service  /usr/lib/systemd/system/multi-user.target.wants/
++fi
+ 
+ %preun
+ %systemd_preun rpm-ostree-countme.timer
+diff --git a/src/daemon/rpm-ostree-fix-shadow-mode.service b/src/daemon/rpm-ostree-fix-shadow-mode.service
+new file mode 100644
+index 00000000..4aea7462
+--- /dev/null
++++ b/src/daemon/rpm-ostree-fix-shadow-mode.service
+@@ -0,0 +1,19 @@
++[Unit]
++# rpm-ostree v2023.6 introduced a permission issue on `/etc/[g]shadow[-]`.
++# This makes sure to fix permissions on systems that were deployed with the wrong permissions.
++Description=Update permissions for /etc/shadow
++Documentation=https://github.com/coreos/rpm-ostree-ghsa-2m76-cwhg-7wv6
++ConditionPathExists=!/etc/.rpm-ostree-shadow-mode-fixed.stamp
++ConditionPathExists=/run/ostree-booted
++# Make sure this is started before any unprivileged (interactive) user has access to the system.
++Before=systemd-user-sessions.service
++
++[Service]
++Type=oneshot
++ExecStart=chmod --verbose 0000 /etc/shadow /etc/gshadow
++ExecStart=-chmod --verbose 0000 /etc/shadow- /etc/gshadow-
++ExecStart=touch /etc/.rpm-ostree-shadow-mode-fixed.stamp
++RemainAfterExit=yes
++
++[Install]
++WantedBy=multi-user.target
+-- 
+2.44.0
+

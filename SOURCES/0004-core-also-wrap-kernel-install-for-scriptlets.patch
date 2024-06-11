@@ -1,0 +1,91 @@
+From 6714c34bae041c036277ddb509af2b4135b759d5 Mon Sep 17 00:00:00 2001
+From: Jonathan Lebon <jonathan@jlebon.com>
+Date: Tue, 7 May 2024 10:05:03 -0400
+Subject: [PATCH 1/1] core: also wrap `kernel-install` for scriptlets
+
+It's confusing right now how specifically for the kernel, one has to use
+this obscure `rpm-ostree cliwrap install-to-root /` command to make it
+work. Let's just always enable it: in the client-side layering case, we
+don't run kernel scriptlets anyway so the wrapper is unused, and in the
+container case, this will allow users to not have to enable cliwrap and
+have it leak into their derived image.
+
+I guess in theory, this should also allow us to *stop* ignoring kernel
+scriptlets and rely on this instead, though let's leave that for a
+separate investigation.
+
+Closes: #4949
+---
+ rust/src/core.rs                      | 18 +++++++++++++++++-
+ src/libpriv/kernel-install-wrapper.sh |  9 +++++++++
+ 2 files changed, 26 insertions(+), 1 deletion(-)
+ create mode 100644 src/libpriv/kernel-install-wrapper.sh
+
+diff --git a/rust/src/core.rs b/rust/src/core.rs
+index 8cd1ee03..ec24ed99 100644
+--- a/rust/src/core.rs
++++ b/rust/src/core.rs
+@@ -44,6 +44,8 @@ const USERADD_PATH: &str = "usr/sbin/useradd";
+ const USERADD_WRAPPER: &[u8] = include_bytes!("../../src/libpriv/useradd-wrapper.sh");
+ const USERMOD_PATH: &str = "usr/sbin/usermod";
+ const USERMOD_WRAPPER: &[u8] = include_bytes!("../../src/libpriv/usermod-wrapper.sh");
++const KERNEL_INSTALL_PATH: &str = "usr/bin/kernel-install";
++const KERNEL_INSTALL_WRAPPER: &[u8] = include_bytes!("../../src/libpriv/kernel-install-wrapper.sh");
+ 
+ const RPMOSTREE_CORE_STAGED_RPMS_DIR: &str = "rpm-ostree/staged-rpms";
+ 
+@@ -143,6 +145,7 @@ impl FilesystemScriptPrep {
+         (SYSTEMCTL_PATH, SYSTEMCTL_WRAPPER),
+         (USERADD_PATH, USERADD_WRAPPER),
+         (USERMOD_PATH, USERMOD_WRAPPER),
++        (KERNEL_INSTALL_PATH, KERNEL_INSTALL_WRAPPER),
+     ];
+ 
+     fn saved_name(name: &str) -> String {
+@@ -436,7 +439,7 @@ mod test {
+         // Replaced usermod.
+         {
+             let original_usermod = "original usermod";
+-            d.atomic_write_with_perms(super::USERMOD_PATH, original_usermod, mode)?;
++            d.atomic_write_with_perms(super::USERMOD_PATH, original_usermod, mode.clone())?;
+             let contents = d.read_to_string(super::USERMOD_PATH)?;
+             assert_eq!(contents, original_usermod);
+             let mut g = super::prepare_filesystem_script_prep(d.as_raw_fd())?;
+@@ -446,6 +449,19 @@ mod test {
+             let contents = d.read_to_string(super::USERMOD_PATH)?;
+             assert_eq!(contents, original_usermod);
+         }
++        // Replaced kernel-install.
++        {
++            let original_kernel_install = "original kernel_install";
++            d.atomic_write_with_perms(super::KERNEL_INSTALL_PATH, original_kernel_install, mode)?;
++            let contents = d.read_to_string(super::KERNEL_INSTALL_PATH)?;
++            assert_eq!(contents, original_kernel_install);
++            let mut g = super::prepare_filesystem_script_prep(d.as_raw_fd())?;
++            let contents = d.read_to_string(super::KERNEL_INSTALL_PATH)?;
++            assert_eq!(contents.as_bytes(), super::KERNEL_INSTALL_WRAPPER);
++            g.undo()?;
++            let contents = d.read_to_string(super::KERNEL_INSTALL_PATH)?;
++            assert_eq!(contents, original_kernel_install);
++        }
+         Ok(())
+     }
+ 
+diff --git a/src/libpriv/kernel-install-wrapper.sh b/src/libpriv/kernel-install-wrapper.sh
+new file mode 100644
+index 00000000..4cfb605b
+--- /dev/null
++++ b/src/libpriv/kernel-install-wrapper.sh
+@@ -0,0 +1,9 @@
++#!/usr/bin/bash
++# Used in the container layering path to make kernel replacements Just Work
++# without having to enable cliwrap first. If cliwrap is enabled, then this will
++# technically override the cliwrap wrapper, but the script is exactly the same.
++# This wrapper is technically also installed when doing client-side layering,
++# but we already ignore kernel scriptlets there anyway.
++# See also https://github.com/coreos/rpm-ostree/issues/4949
++
++exec /usr/bin/rpm-ostree cliwrap kernel-install "$@"
+-- 
+2.45.0
+
