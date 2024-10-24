@@ -4,7 +4,7 @@
 Summary: Hybrid image/package system
 Name: rpm-ostree
 Version: 2024.3
-Release: 5%{?dist}
+Release: 6%{?dist}
 License: LGPLv2+
 URL: https://github.com/coreos/rpm-ostree
 # This tarball is generated via "cd packaging && make -f Makefile.dist-packaging dist-snapshot"
@@ -17,6 +17,7 @@ Patch2: 0002-unit-chmod-etc-g-shadow-to-0000.patch
 Patch3: 0003-shadow-Adjust-all-deployments.patch
 Patch4: 0004-core-also-wrap-kernel-install-for-scriptlets.patch
 Patch5: 0005-rpm-ostree-fix-shadow-mode.service-don-t-run-if-OS-i.patch
+Patch6: 0001-treefile-Add-ignore-devices.patch
 
 ExclusiveArch: %{rust_arches}
 
@@ -251,6 +252,10 @@ fi
 %files devel -f files.devel
 
 %changelog
+* Mon Oct 14 2024 Joseph Marrero <jmarrero@fedoraproject.org> - 2024.3-6
+- Backport https://github.com/coreos/rpm-ostree/pull/5114
+  Resolves: #RHEL-62651
+
 * Tue Aug 20 2024 Huijing Hei <hhei@fedoraproject.org> - 2024.3-5
 - Backport https://github.com/coreos/rpm-ostree/pull/4944
   Resolves: #RHEL-55249
