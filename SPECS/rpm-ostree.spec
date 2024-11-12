@@ -4,7 +4,7 @@
 Summary: Hybrid image/package system
 Name: rpm-ostree
 Version: 2024.7
-Release: 2%{?dist}
+Release: 3%{?dist}
 License: LGPLv2+
 URL: https://github.com/coreos/rpm-ostree
 # This tarball is generated via "cd packaging && make -f Makefile.dist-packaging dist-snapshot"
@@ -12,6 +12,7 @@ URL: https://github.com/coreos/rpm-ostree
 Source0: https://github.com/coreos/rpm-ostree/releases/download/v%{version}/rpm-ostree-%{version}.tar.xz
 
 Patch0: 0001-core-Fix-Coverity-WRAPPER_ESCAPE.patch
+Patch1: 0001-treefile-Add-ignore-devices.patch
 
 ExclusiveArch: %{rust_arches}
 
@@ -246,6 +247,10 @@ fi
 %files devel -f files.devel
 
 %changelog
+* Thu Oct 17 2024 Joseph Marrero <jmarrero@fedoraproject.org> - 2024.7-3
+- Backport https://github.com/coreos/rpm-ostree/pull/5114
+  Resolves: #RHEL-62652
+
 * Thu Aug 15 2024 Joseph Marrero <jmarrero@fedoraproject.org> - 2024.7-2
 - Backport https://github.com/coreos/rpm-ostree/pull/5051
   Resolves: #RHEL-53871
