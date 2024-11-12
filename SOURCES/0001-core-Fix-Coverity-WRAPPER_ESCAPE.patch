@@ -1,0 +1,33 @@
+From 96ddae1acba59cf5249dcfff1157e44b5ed69650 Mon Sep 17 00:00:00 2001
+From: Colin Walters <walters@verbum.org>
+Date: Thu, 15 Aug 2024 11:41:43 -0400
+Subject: [PATCH 1/1] core: Fix Coverity WRAPPER_ESCAPE
+
+This should fix:
+
+```
+32. rpm-ostree-2024.7/src/libpriv/rpmostree-core.cxx:1786:15: use_after_free: Using internal representation of destroyed object temporary of type "std::string".
+```
+
+Signed-off-by: Colin Walters <walters@verbum.org>
+---
+ src/libpriv/rpmostree-core.cxx | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/libpriv/rpmostree-core.cxx b/src/libpriv/rpmostree-core.cxx
+index a2de7262..615e2636 100644
+--- a/src/libpriv/rpmostree-core.cxx
++++ b/src/libpriv/rpmostree-core.cxx
+@@ -1782,7 +1782,8 @@ rpmostree_context_prepare (RpmOstreeContext *self, gboolean enable_filelists,
+           auto pkg = "";
+           for (auto &pkg_str : packages)
+             {
+-              pkg = std::string (pkg_str).c_str ();
++              auto pkg_buf = std::string (pkg_str);
++              pkg = pkg_buf.c_str ();
+               char *query = strchr ((char *)pkg, '/');
+               if (query)
+                 {
+-- 
+2.46.0
+

@@ -3,21 +3,15 @@
 
 Summary: Hybrid image/package system
 Name: rpm-ostree
-Version: 2024.3
-Release: 6%{?dist}
+Version: 2024.7
+Release: 2%{?dist}
 License: LGPLv2+
 URL: https://github.com/coreos/rpm-ostree
 # This tarball is generated via "cd packaging && make -f Makefile.dist-packaging dist-snapshot"
 # in the upstream git.  It also contains vendored Rust sources.
 Source0: https://github.com/coreos/rpm-ostree/releases/download/v%{version}/rpm-ostree-%{version}.tar.xz
 
-Patch0: 0001-cliwrap-rpm-mark-eval-E-as-safe.patch
-Patch1: 0001-passwd-create-etc-g-shadow-with-mode-0.patch
-Patch2: 0002-unit-chmod-etc-g-shadow-to-0000.patch
-Patch3: 0003-shadow-Adjust-all-deployments.patch
-Patch4: 0004-core-also-wrap-kernel-install-for-scriptlets.patch
-Patch5: 0005-rpm-ostree-fix-shadow-mode.service-don-t-run-if-OS-i.patch
-Patch6: 0001-treefile-Add-ignore-devices.patch
+Patch0: 0001-core-Fix-Coverity-WRAPPER_ESCAPE.patch
 
 ExclusiveArch: %{rust_arches}
 
@@ -252,25 +246,32 @@ fi
 %files devel -f files.devel
 
 %changelog
-* Mon Oct 14 2024 Joseph Marrero <jmarrero@fedoraproject.org> - 2024.3-6
-- Backport https://github.com/coreos/rpm-ostree/pull/5114
-  Resolves: #RHEL-62651
+* Thu Aug 15 2024 Joseph Marrero <jmarrero@fedoraproject.org> - 2024.7-2
+- Backport https://github.com/coreos/rpm-ostree/pull/5051
+  Resolves: #RHEL-53871
 
-* Tue Aug 20 2024 Huijing Hei <hhei@fedoraproject.org> - 2024.3-5
-- Backport https://github.com/coreos/rpm-ostree/pull/4944
-  Resolves: #RHEL-55249
+* Tue Aug 09 2024 Joseph Marrero <jmarrero@fedoraproject.org> - 2024.7-1
+- Rebase to 2024.7
+  Resolves: #RHEL-53871
 
-* Fri May 10 2024 Joseph Marrero <jmarrero@fedoraproject.org> - 2024.3-4
-- Backport https://github.com/coreos/rpm-ostree/pull/4950
-  Resolves: #RHEL-36085
+* Tue May 21 2024 Joseph Marrero <jmarrero@fedoraproject.org> - 2024.5-1
+- Rebase to 2024.6
+  Resolves: #RHEL-29339
 
-* Tue Apr 16 2024 Joseph Marrero <jmarrero@fedoraproject.org> - 2024.3-3
+* Mon Apr 15 2024 Joseph Marrero <jmarrero@fedoraproject.org> - 2024.5-1
+- Rebase to 2024.5
+  Adds fix for https://github.com/coreos/rpm-ostree/security/advisories/GHSA-2m76-cwhg-7wv6
+  Resolves: #RHEL-30415
+
+* Tue Apr 09 2024 Joseph Marrero <jmarrero@fedoraproject.org> - 2024.4-4
 - Backport https://github.com/coreos/rpm-ostree/security/advisories/GHSA-2m76-cwhg-7wv6
-  Resolves: #RHEL-31852
 
-* Fri Apr 05 2024 Joseph Marrero <jmarrero@fedoraproject.org> - 2024.3-2
-- Backport https://github.com/coreos/rpm-ostree/security/advisories/GHSA-2m76-cwhg-7wv6
-  Resolves: #RHEL-31852
+* Thu Mar 21 2024 Colin Walters <walters@verbum.org> - 2024.4-3
+- Backport patch to fix https://issues.redhat.com/browse/RHEL-29559
+
+* Fri Mar 15 2024 Colin Walters <walters@verbum.org> - 2024.4-2
+- https://github.com/coreos/rpm-ostree/releases/tag/v2024.4
+  Resolves: #RHEL-29339
 
 * Sun Feb 25 2024 Joseph Marrero <jmarrero@fedoraproject.org> - 2024.3-1
 - https://github.com/coreos/rpm-ostree/releases/tag/v2024.3
