@@ -1,0 +1,302 @@
+From 9bd9333a65c2407a769f920eaf424cde64b6268b Mon Sep 17 00:00:00 2001
+From: Colin Walters <walters@verbum.org>
+Date: Fri, 21 Mar 2025 16:48:06 -0400
+Subject: [PATCH] build-chunked-oci: Handle multi-arch, perserve labels
+
+- Move build-chunked-oci test into its own script; motivated
+  by extending this and making it easier to run outside GHA.
+  Less bash-in-YAML
+- Ensure we pass the correct container metadata down to
+  build-chunked-oci to preserve labels
+- Because all we do is rearrange files in tarballs basically
+  (i.e. we don't execute any code in the target) we should handle
+  cross-architecture rechunking OK. Ensure that we also
+  propagate the architecture from the original manifest.
+
+Signed-off-by: Colin Walters <walters@verbum.org>
+---
+ .github/workflows/ci.yaml                  | 15 +-----
+ Cargo.lock                                 | 55 ++++++++++++++++++++--
+ Cargo.toml                                 |  2 +-
+ rust/src/compose.rs                        | 10 +++-
+ rust/src/container.rs                      | 26 +++++++---
+ tests/build-chunked-oci/Containerfile.test |  1 +
+ tests/build-chunked-oci/test.sh            | 34 +++++++++++++
+ 7 files changed, 116 insertions(+), 27 deletions(-)
+ create mode 100755 tests/build-chunked-oci/test.sh
+
+diff --git a/Cargo.lock b/Cargo.lock
+index a2e372c6e..40d362667 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -26,7 +26,7 @@ dependencies = [
+  "cfg-if",
+  "once_cell",
+  "version_check",
+- "zerocopy",
++ "zerocopy 0.7.35",
+ ]
+ 
+ [[package]]
+@@ -225,7 +225,7 @@ dependencies = [
+ [[package]]
+ name = "bootc-utils"
+ version = "0.0.0"
+-source = "git+https://github.com/containers/bootc?rev=73de2a8ef0a312243b686c6bd2c91413ee725c05#73de2a8ef0a312243b686c6bd2c91413ee725c05"
++source = "git+https://github.com/containers/bootc?rev=d9b18c8883ad24e7b0faf596758e3c12b26656e5#d9b18c8883ad24e7b0faf596758e3c12b26656e5"
+ dependencies = [
+  "anyhow",
+  "rustix",
+@@ -462,6 +462,29 @@ dependencies = [
+  "unicode-width 0.2.0",
+ ]
+ 
++[[package]]
++name = "composefs"
++version = "0.2.0"
++source = "git+https://github.com/containers/composefs-rs?rev=55ae2e9ba72f6afda4887d746e6b98f0a1875ac4#55ae2e9ba72f6afda4887d746e6b98f0a1875ac4"
++dependencies = [
++ "anyhow",
++ "async-compression",
++ "clap",
++ "containers-image-proxy",
++ "hex",
++ "indicatif",
++ "oci-spec",
++ "regex-automata 0.4.9",
++ "rustix",
++ "sha2",
++ "tar",
++ "tempfile",
++ "thiserror 2.0.11",
++ "tokio",
++ "zerocopy 0.8.24",
++ "zstd",
++]
++
+ [[package]]
+ name = "console"
+ version = "0.15.10"
+@@ -1688,6 +1711,7 @@ dependencies = [
+  "console",
+  "number_prefix",
+  "portable-atomic",
++ "tokio",
+  "unicode-width 0.2.0",
+  "web-time",
+ ]
+@@ -2181,7 +2205,7 @@ dependencies = [
+ [[package]]
+ name = "ostree-ext"
+ version = "0.15.3"
+-source = "git+https://github.com/containers/bootc?rev=73de2a8ef0a312243b686c6bd2c91413ee725c05#73de2a8ef0a312243b686c6bd2c91413ee725c05"
++source = "git+https://github.com/containers/bootc?rev=d9b18c8883ad24e7b0faf596758e3c12b26656e5#d9b18c8883ad24e7b0faf596758e3c12b26656e5"
+ dependencies = [
+  "anyhow",
+  "bootc-utils",
+@@ -2190,6 +2214,7 @@ dependencies = [
+  "chrono",
+  "clap",
+  "comfy-table",
++ "composefs",
+  "containers-image-proxy",
+  "flate2",
+  "fn-error-context",
+@@ -2366,7 +2391,7 @@ version = "0.2.20"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "77957b295656769bb8ad2b6a6b09d897d94f05c41b069aede1fcdaa675eaea04"
+ dependencies = [
+- "zerocopy",
++ "zerocopy 0.7.35",
+ ]
+ 
+ [[package]]
+@@ -4094,7 +4119,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "1b9b4fd18abc82b8136838da5d50bae7bdea537c574d8dc1a34ed098d6c166f0"
+ dependencies = [
+  "byteorder",
+- "zerocopy-derive",
++ "zerocopy-derive 0.7.35",
++]
++
++[[package]]
++name = "zerocopy"
++version = "0.8.24"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "2586fea28e186957ef732a5f8b3be2da217d65c5969d4b1e17f973ebbe876879"
++dependencies = [
++ "zerocopy-derive 0.8.24",
+ ]
+ 
+ [[package]]
+@@ -4108,6 +4142,17 @@ dependencies = [
+  "syn 2.0.96",
+ ]
+ 
++[[package]]
++name = "zerocopy-derive"
++version = "0.8.24"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "a996a8f63c5c4448cd959ac1bab0aaa3306ccfd060472f85943ee0750f0169be"
++dependencies = [
++ "proc-macro2",
++ "quote",
++ "syn 2.0.96",
++]
++
+ [[package]]
+ name = "zerofrom"
+ version = "0.1.5"
+diff --git a/Cargo.toml b/Cargo.toml
+index 8024ac233..6a9382ee7 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -73,7 +73,7 @@ openssl = "0.10.70"
+ once_cell = "1.20.2"
+ os-release = "0.1.0"
+ # We pull this one from git, as the project is no longer published as an external crate.
+-ostree-ext = { git = "https://github.com/containers/bootc", rev = "73de2a8ef0a312243b686c6bd2c91413ee725c05" }
++ostree-ext = { git = "https://github.com/containers/bootc", rev = "d9b18c8883ad24e7b0faf596758e3c12b26656e5" }
+ paste = "1.0"
+ phf = { version = "0.11", features = ["macros"] }
+ rand = "0.8.5"
+diff --git a/rust/src/compose.rs b/rust/src/compose.rs
+index aeab0326d..6a2445f71 100644
+--- a/rust/src/compose.rs
++++ b/rust/src/compose.rs
+@@ -298,6 +298,7 @@ impl BuildChunkedOCIOpts {
+                 config.set_created(Some(toplevel_ts));
+                 config
+             };
++        let arch = image_config.architecture();
+         let creation_timestamp = image_config
+             .created()
+             .as_deref()
+@@ -329,9 +330,13 @@ impl BuildChunkedOCIOpts {
+             .bootc
+             .then_some(["--label", "containers.bootc=1"].as_slice())
+             .unwrap_or_default();
+-        let config_data = if self.from.is_some() {
++        let base_config = image_config
++            .config()
++            .as_ref()
++            .filter(|_| self.from.is_some());
++        let config_data = if let Some(config) = base_config {
+             let mut tmpf = tempfile::NamedTempFile::new()?;
+-            serde_json::to_writer(&mut tmpf, &image_config)?;
++            serde_json::to_writer(&mut tmpf, &config)?;
+             Some(tmpf.into_temp_path())
+         } else {
+             None
+@@ -345,6 +350,7 @@ impl BuildChunkedOCIOpts {
+             ])
+             .args(label_arg)
+             .args(self.max_layers.map(|l| format!("--max-layers={l}")))
++            .arg(format!("--arch={arch}"))
+             .args(
+                 config_data
+                     .iter()
+diff --git a/rust/src/container.rs b/rust/src/container.rs
+index c50670b53..50f167cac 100644
+--- a/rust/src/container.rs
++++ b/rust/src/container.rs
+@@ -25,6 +25,7 @@ use ostree_ext::containers_image_proxy;
+ use ostree_ext::objectsource::{
+     ContentID, ObjectMeta, ObjectMetaMap, ObjectMetaSet, ObjectSourceMeta,
+ };
++use ostree_ext::oci_spec::image::{Arch, Os, PlatformBuilder};
+ use ostree_ext::prelude::*;
+ use ostree_ext::{gio, oci_spec, ostree};
+ 
+@@ -56,6 +57,10 @@ struct ContainerEncapsulateOpts {
+     #[clap(long)]
+     image_config: Option<Utf8PathBuf>,
+ 
++    /// Override the architecture.
++    #[clap(long)]
++    arch: Option<Arch>,
++
+     /// Propagate an OSTree commit metadata key to container label
+     #[clap(name = "copymeta", long)]
+     copy_meta_keys: Vec<String>,
+@@ -504,13 +509,22 @@ pub fn container_encapsulate(args: Vec<String>) -> CxxResult<()> {
+             .map_err(anyhow::Error::msg)?;
+         opts.container_config = Some(config);
+     }
++    // If an architecture was provided, then generate a new Platform (using the host OS type)
++    // but override with that architecture.
++    if let Some(arch) = opt.arch.as_ref() {
++        let platform = PlatformBuilder::default()
++            .architecture(arch.clone())
++            .os(Os::default())
++            .build()
++            .unwrap();
++        opts.platform = Some(platform);
++    }
+     let handle = tokio::runtime::Handle::current();
+-    let digest = progress_task("Generating container image", || {
+-        handle.block_on(async {
+-            ostree_ext::container::encapsulate(repo, rev.as_str(), &config, Some(opts), &opt.imgref)
+-                .await
+-                .context("Encapsulating")
+-        })
++    println!("Generating container image");
++    let digest = handle.block_on(async {
++        ostree_ext::container::encapsulate(repo, rev.as_str(), &config, Some(opts), &opt.imgref)
++            .await
++            .context("Encapsulating")
+     })?;
+ 
+     if let Some(compare_with_build) = opt.compare_with_build.as_ref() {
+diff --git a/tests/build-chunked-oci/Containerfile.test b/tests/build-chunked-oci/Containerfile.test
+index 81e503561..fbb5c487b 100644
+--- a/tests/build-chunked-oci/Containerfile.test
++++ b/tests/build-chunked-oci/Containerfile.test
+@@ -10,3 +10,4 @@ dnf clean all
+ rm /var/lib/rpm -rf
+ bootc container lint
+ EORUN
++LABEL testlabel=1
+diff --git a/tests/build-chunked-oci/test.sh b/tests/build-chunked-oci/test.sh
+new file mode 100755
+index 000000000..052e6d708
+--- /dev/null
++++ b/tests/build-chunked-oci/test.sh
+@@ -0,0 +1,34 @@
++#!/bin/bash
++set -xeuo pipefail
++
++# First: a cross-arch rechunking
++testimg_base=quay.io/centos-bootc/centos-bootc:stream9
++chunked_output=localhost/chunked-ppc64le
++podman pull --arch=ppc64le ${testimg_base}
++podman run --rm --privileged --security-opt=label=disable \
++  -v /var/lib/containers:/var/lib/containers \
++  -v /var/tmp:/var/tmp \
++  -v $(pwd):/output \
++  localhost/builder rpm-ostree compose build-chunked-oci --bootc --from ${testimg_base} --output containers-storage:${chunked_output}
++podman rmi ${testimg_base}
++podman inspect containers-storage:${chunked_output} | jq '.[0]' > config.json
++podman rmi ${chunked_output}
++test $(jq -r '.Architecture' < config.json) = "ppc64le"
++echo "ok cross arch rechunking"
++
++# Build a custom image, then rechunk it
++podman build -t localhost/base -f Containerfile.test
++orig_created=$(podman inspect containers-storage:localhost/base | jq -r '.[0].Created')
++podman run --rm --privileged --security-opt=label=disable \
++  -v /var/lib/containers:/var/lib/containers \
++  -v /var/tmp:/var/tmp \
++  -v $(pwd):/output \
++  localhost/builder rpm-ostree compose build-chunked-oci --bootc --format-version=1 --max-layers 99 --from localhost/base --output containers-storage:localhost/chunked
++podman inspect containers-storage:localhost/chunked | jq '.[0]' > new-config.json
++# Verify we propagated the creation date
++new_created=$(jq -r .Created < new-config.json)
++# ostree only stores seconds, so canonialize the rfc3339 data to seconds
++test "$(date --date="${orig_created}" --rfc-3339=seconds)" = "$(date --date="${new_created}" --rfc-3339=seconds)"
++# Verify we propagated labels
++test $(jq -r .Labels.testlabel < new-config.json) = "1"
++echo "ok rechunking with labels"
+-- 
+2.47.0
+

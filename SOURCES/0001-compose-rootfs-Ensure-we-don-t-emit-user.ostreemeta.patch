@@ -1,0 +1,410 @@
+From 303a691757317df8cb9d4b576c3b8dd73d8e53df Mon Sep 17 00:00:00 2001
+From: Colin Walters <walters@verbum.org>
+Date: Tue, 4 Mar 2025 17:07:40 -0500
+Subject: [PATCH 1/3] compose-rootfs: Fix perms for /
+
+The trick we did here in working around `compose install`
+generating a `rootfs` subdirectory by moving its contents into
+the parent meant we lost the mode bits.
+
+Somehow, only when targeting this for CentOS we hit on the
+mode being 0700 (I think this may relate to umask? We probably
+need to audit our whole codebase to avoid umask issues; but
+really in the longer term switch to trusting the `filesystem`
+rpm instead of manually extracting the root).
+
+Signed-off-by: Colin Walters <walters@verbum.org>
+---
+ rust/src/compose.rs                | 17 +++++++++++++----
+ tests/compose-rootfs/Containerfile |  2 ++
+ 2 files changed, 15 insertions(+), 4 deletions(-)
+
+diff --git a/rust/src/compose.rs b/rust/src/compose.rs
+index 0bd77883..34dfb2db 100644
+--- a/rust/src/compose.rs
++++ b/rust/src/compose.rs
+@@ -8,7 +8,6 @@ use std::fs::File;
+ use std::io::{BufRead, BufReader, BufWriter, Write};
+ use std::num::NonZeroU32;
+ use std::os::fd::{AsFd, AsRawFd};
+-use std::path::Path;
+ use std::process::Command;
+ 
+ use anyhow::{anyhow, Context, Result};
+@@ -493,15 +492,25 @@ impl RootfsOpts {
+             }
+             d.remove_all_optional(&name)?;
+         }
+-        for ent in d.read_dir(rootfs_name).context("Reading rootfs")? {
++        let rootfs = d.open_dir(rootfs_name)?;
++        for ent in rootfs.entries().context("Reading rootfs")? {
+             let ent = ent?;
+             let name = ent.file_name();
+-            let origpath = Path::new(rootfs_name).join(&name);
+-            d.rename(origpath, d, &name)
++            rootfs
++                .rename(&name, d, &name)
+                 .with_context(|| format!("Renaming rootfs/{name:?}"))?;
+         }
+         // Clean up the now empty dir
+         d.remove_dir(rootfs_name).context("Removing rootfs")?;
++
++        // Propagate mode bits from source to target
++        {
++            let perms = rootfs.dir_metadata()?.permissions();
++            d.set_permissions(".", perms)
++                .context("Setting target permissions")?;
++            tracing::debug!("rootfs fixup complete");
++        }
++
+         Ok(())
+     }
+ 
+diff --git a/tests/compose-rootfs/Containerfile b/tests/compose-rootfs/Containerfile
+index 91187cc9..00b70f7e 100644
+--- a/tests/compose-rootfs/Containerfile
++++ b/tests/compose-rootfs/Containerfile
+@@ -26,6 +26,8 @@ RUN <<EORUN
+ set -xeuo pipefail
+ # Validate we aren't using ostree-container format
+ test '!' -f /ostree/repo/config
++# Validate executable bit for others on /
++test $(($(stat -c '0%a' /) % 2)) = 1
+ # Validate we have file caps
+ getfattr -d -m security.capability /usr/bin/newuidmap
+ bootc container lint
+-- 
+2.48.1
+
+
+From 5962ce2978e5f0c60bb7506b707572a0779a74b6 Mon Sep 17 00:00:00 2001
+From: Colin Walters <walters@verbum.org>
+Date: Mon, 17 Mar 2025 19:05:21 -0400
+Subject: [PATCH 2/3] compose: Ensure tempdir is dropped after commit
+
+The tempdir holds the ostree repo.
+
+I'm looking at an issue reported in a downstream build that failed
+like this:
+
+```
++ rpm-ostree experimental compose build-chunked-oci --bootc --format-version=1 --rootfs /target-rootfs --output oci-archive:/buildcontext/out.ociarchive
+Generating commit...
+error: Generating commit from rootfs: syncfs: Not a directory
+subprocess exited with status 1
+subprocess exited with status 1
+```
+
+Which frankly has me just confused. The `syncfs` here is
+almost certainly coming from libostree's sync of the target repo.
+
+And "Not a directory" is especially weird, implying
+that `repo/tmp` got swapped with something else?
+
+Signed-off-by: Colin Walters <walters@verbum.org>
+---
+ rust/src/compose.rs | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/rust/src/compose.rs b/rust/src/compose.rs
+index 34dfb2db..ef63446c 100644
+--- a/rust/src/compose.rs
++++ b/rust/src/compose.rs
+@@ -352,6 +352,8 @@ impl BuildChunkedOCIOpts {
+             .context("Invoking compose container-encapsulate")?;
+ 
+         drop(rootfs);
++        // Ensure our tempdir is only dropped now
++        drop(td);
+         match rootfs_source {
+             FileSource::Rootfs(_) => {}
+             FileSource::Podman(mnt) => {
+-- 
+2.48.1
+
+
+From 96c90c9d3bf6461fc1c96f37825445dd0afa6d7b Mon Sep 17 00:00:00 2001
+From: Colin Walters <walters@verbum.org>
+Date: Thu, 20 Mar 2025 14:53:37 -0400
+Subject: [PATCH 3/3] compose-rootfs: Ensure we don't emit user.ostreemeta
+
+- First ensure we're always ignoring SELinux here, in this
+  use case we rely on e.g. bootc to do client side labeling.
+  Doing this required a fix in the compose path.
+- Second and more importantly, ensure we don't leak
+  user.ostreemeta xattrs into the target root! This is just
+  generally ugly, and will e.g. cause object duplication on disk.
+  But worse, having `user.` xattrs provokes backwards incompat
+  bugs from https://github.com/ostreedev/ostree/pull/3346
+---
+ rust/src/compose.rs                        | 124 ++++++++++++++++++++-
+ src/app/rpmostree-compose-builtin-tree.cxx |  23 ++--
+ tests/compose-rootfs/Containerfile         |   4 +
+ 3 files changed, 142 insertions(+), 9 deletions(-)
+
+diff --git a/rust/src/compose.rs b/rust/src/compose.rs
+index ef63446c..67fef8cf 100644
+--- a/rust/src/compose.rs
++++ b/rust/src/compose.rs
+@@ -3,11 +3,14 @@
+ // SPDX-License-Identifier: Apache-2.0 OR MIT
+ 
+ use std::borrow::Cow;
+-use std::ffi::OsStr;
++use std::collections::BTreeSet;
++use std::ffi::{OsStr, OsString};
+ use std::fs::File;
+ use std::io::{BufRead, BufReader, BufWriter, Write};
+ use std::num::NonZeroU32;
+ use std::os::fd::{AsFd, AsRawFd};
++use std::os::unix::ffi::OsStrExt;
++use std::path::{Path, PathBuf};
+ use std::process::Command;
+ 
+ use anyhow::{anyhow, Context, Result};
+@@ -478,6 +481,79 @@ fn mutate_source_root(exec_root: &Dir, source_root: &Utf8Path) -> Result<()> {
+     Ok(())
+ }
+ 
++fn fdpath_for(fd: impl AsFd, path: impl AsRef<Path>) -> PathBuf {
++    let fd = fd.as_fd();
++    let path = path.as_ref();
++    let mut fdpath = PathBuf::from(format!("/proc/self/fd/{}", fd.as_raw_fd()));
++    fdpath.push(path);
++    fdpath
++}
++
++/// Get an optional extended attribute from the path; does not follow symlinks on the end target.
++fn lgetxattr_optional_at(
++    fd: impl AsFd,
++    path: impl AsRef<Path>,
++    key: impl AsRef<OsStr>,
++) -> std::io::Result<Option<Vec<u8>>> {
++    let fd = fd.as_fd();
++    let path = path.as_ref();
++    let key = key.as_ref();
++
++    // Arbitrary hardcoded value, but we should have a better xattr API somewhere
++    let mut value = [0u8; 8196];
++    let fdpath = fdpath_for(fd, path);
++    match rustix::fs::lgetxattr(&fdpath, key, &mut value) {
++        Ok(r) => Ok(Some(Vec::from(&value[0..r]))),
++        Err(e) if e == rustix::io::Errno::NODATA => Ok(None),
++        Err(e) => Err(e.into()),
++    }
++}
++
++#[derive(Debug, Default)]
++struct XattrRemovalInfo {
++    /// Set of unhandled xattrs we found
++    names: BTreeSet<OsString>,
++    /// Number of files with unhandled xattrsi
++    count: u64,
++}
++
++fn strip_usermeta(d: &Dir, info: &mut XattrRemovalInfo) -> Result<()> {
++    let usermeta_key = "user.ostreemeta";
++
++    for ent in d.entries()? {
++        let ent = ent?;
++        let ty = ent.file_type()?;
++
++        if ty.is_dir() {
++            let subdir = ent.open_dir()?;
++            strip_usermeta(&subdir, info)?;
++        } else {
++            let name = ent.file_name();
++            let Some(usermeta) = lgetxattr_optional_at(d.as_fd(), &name, usermeta_key)? else {
++                continue;
++            };
++            let usermeta =
++                glib::Variant::from_data::<(u32, u32, u32, Vec<(Vec<u8>, Vec<u8>)>), _>(usermeta);
++            let xattrs = usermeta.child_value(3);
++            let n = xattrs.n_children();
++            for i in 0..n {
++                let v = xattrs.child_value(i);
++                let key = v.child_value(0);
++                let key = key.fixed_array::<u8>().unwrap();
++                let key = OsStr::from_bytes(key);
++                if !info.names.contains(key) {
++                    info.names.insert(key.to_owned());
++                }
++                info.count += 1;
++            }
++            let fdpath = fdpath_for(d.as_fd(), &name);
++            let _ = rustix::fs::lremovexattr(&fdpath, usermeta_key).context("lremovexattr")?;
++        }
++    }
++
++    Ok(())
++}
++
+ impl RootfsOpts {
+     // For bad legacy reasons "compose install" actually writes to a subdirectory named rootfs.
+     // Clean that up by deleting everything except rootfs/ and moving the contents of rootfs/
+@@ -513,6 +589,16 @@ impl RootfsOpts {
+             tracing::debug!("rootfs fixup complete");
+         }
+ 
++        // And finally, clean up the ostree.usermeta xattr
++        let mut info = XattrRemovalInfo::default();
++        strip_usermeta(d, &mut info)?;
++        if info.count > 0 {
++            eprintln!("Found unhandled xattrs in files: {}", info.count);
++            for attr in info.names {
++                eprintln!("  {attr:?}");
++            }
++        }
++
+         Ok(())
+     }
+ 
+@@ -551,7 +637,7 @@ impl RootfsOpts {
+             let repo = ostree::Repo::create_at(
+                 libc::AT_FDCWD,
+                 repo_path.as_str(),
+-                ostree::RepoMode::BareUser,
++                ostree::RepoMode::Bare,
+                 None,
+                 gio::Cancellable::NONE,
+             )?;
+@@ -564,6 +650,9 @@ impl RootfsOpts {
+             .args([
+                 "compose",
+                 "install",
++                // We can't rely on being able to do labels in a container build
++                // and instead assume that bootc will do client side labeling.
++                "--disable-selinux",
+                 "--unified-core",
+                 "--postprocess",
+                 "--repo",
+@@ -582,6 +671,12 @@ impl RootfsOpts {
+             .args([manifest.as_str(), self.dest.as_str()])
+             .run()
+             .context("Executing compose install")?;
++
++        // Clear everything in the tempdir; at this point we may have hardlinks into
++        // the pkgcache repo, which we don't need because we're producing a flat
++        // tree, not a repo.
++        td.close()?;
++
+         // Undo the subdirectory "rootfs"
+         {
+             let target = Dir::open_ambient_dir(&self.dest, cap_std::ambient_authority())?;
+@@ -1147,9 +1242,34 @@ mod tests {
+     use cap_std::fs::PermissionsExt;
+     use cap_std_ext::cap_tempfile;
+     use gio::prelude::FileExt;
++    use rustix::{fs::XattrFlags, io::Errno};
+ 
+     use super::*;
+ 
++    #[test]
++    fn test_fixup_install_root() -> Result<()> {
++        let td = cap_tempfile::tempdir(cap_std::ambient_authority())?;
++        let bashpath = Utf8Path::new("rootfs/usr/bin/bash");
++
++        td.create_dir_all(bashpath.parent().unwrap())?;
++        td.write(bashpath, b"bash")?;
++        let f = td.open(bashpath)?;
++        let xattrs = Vec::<(Vec<u8>, Vec<u8>)>::new();
++        let v = glib::Variant::from((0u32, 0u32, 0u32, xattrs));
++        let v = v.data_as_bytes();
++        rustix::fs::fsetxattr(f.as_fd(), "user.ostreemeta", &v, XattrFlags::empty())
++            .context("fsetxattr")?;
++
++        RootfsOpts::fixup_installroot(&td).unwrap();
++
++        let f = td.open("usr/bin/bash").unwrap();
++        let mut buf = [0u8; 1024];
++        let e = rustix::fs::fgetxattr(f.as_fd(), "user.ostreemeta", &mut buf).err();
++        assert_eq!(e, Some(Errno::NODATA));
++
++        Ok(())
++    }
++
+     fn commit_filter(
+         _repo: &ostree::Repo,
+         _name: &str,
+diff --git a/src/app/rpmostree-compose-builtin-tree.cxx b/src/app/rpmostree-compose-builtin-tree.cxx
+index f05bae80..df446f0b 100644
+--- a/src/app/rpmostree-compose-builtin-tree.cxx
++++ b/src/app/rpmostree-compose-builtin-tree.cxx
+@@ -72,6 +72,7 @@ static char *opt_previous_inputhash;
+ static char *opt_previous_version;
+ static gboolean opt_dry_run;
+ static gboolean opt_print_only;
++static gboolean opt_disable_selinux;
+ static gboolean opt_install_postprocess;
+ static char *opt_write_commitid_to;
+ static char *opt_write_composejson_to;
+@@ -119,6 +120,8 @@ static GOptionEntry install_option_entries[]
+           NULL },
+         { "print-only", 0, 0, G_OPTION_ARG_NONE, &opt_print_only,
+           "Just expand any includes and print treefile", NULL },
++        { "disable-selinux", 0, 0, G_OPTION_ARG_NONE, &opt_disable_selinux,
++          "Disable SELinux labeling, even if manifest enables it", NULL },
+         { "touch-if-changed", 0, 0, G_OPTION_ARG_STRING, &opt_touch_if_changed,
+           "Update the modification time on FILE if a new commit was created", "FILE" },
+         { "previous-commit", 0, 0, G_OPTION_ARG_STRING, &opt_previous_commit,
+@@ -248,6 +251,9 @@ static gboolean
+ try_load_previous_sepolicy (RpmOstreeTreeComposeContext *self, GCancellable *cancellable,
+                             GError **error)
+ {
++  if (opt_disable_selinux)
++    return TRUE; /* nothing to do */
++
+   auto selinux = (*self->treefile_rs)->get_selinux ();
+ 
+   if (!selinux || !self->previous_checksum)
+@@ -508,14 +514,17 @@ install_packages (RpmOstreeTreeComposeContext *self, gboolean *out_unmodified,
+       /* Now reload the policy from the tmproot, and relabel the pkgcache - this
+        * is the same thing done in rpmostree_context_commit().
+        */
+-      g_autoptr (OstreeSePolicy) sepolicy = NULL;
+-      if (!rpmostree_prepare_rootfs_get_sepolicy (rootfs_dfd, &sepolicy, cancellable, error))
+-        return FALSE;
++      if (!opt_disable_selinux)
++        {
++          g_autoptr (OstreeSePolicy) sepolicy = NULL;
++          if (!rpmostree_prepare_rootfs_get_sepolicy (rootfs_dfd, &sepolicy, cancellable, error))
++            return FALSE;
+ 
+-      rpmostree_context_set_sepolicy (self->corectx, sepolicy);
++          rpmostree_context_set_sepolicy (self->corectx, sepolicy);
+ 
+-      if (!rpmostree_context_force_relabel (self->corectx, cancellable, error))
+-        return FALSE;
++          if (!rpmostree_context_force_relabel (self->corectx, cancellable, error))
++            return FALSE;
++        }
+     }
+   else
+     {
+@@ -765,7 +774,7 @@ rpm_ostree_compose_context_new (const char *treefile_pathstr, const char *basear
+   /* In the legacy compose path, we don't want to use any of the core's selinux stuff,
+    * e.g. importing, relabeling, etc... so just disable it. We do still set the policy
+    * to the final one right before commit as usual. */
+-  if (!opt_unified_core)
++  if (!opt_unified_core || opt_disable_selinux)
+     rpmostree_context_disable_selinux (self->corectx);
+ 
+   g_autoptr (OstreeRepo) layer_repo = NULL;
+diff --git a/tests/compose-rootfs/Containerfile b/tests/compose-rootfs/Containerfile
+index 00b70f7e..e711e2c4 100644
+--- a/tests/compose-rootfs/Containerfile
++++ b/tests/compose-rootfs/Containerfile
+@@ -30,6 +30,10 @@ test '!' -f /ostree/repo/config
+ test $(($(stat -c '0%a' /) % 2)) = 1
+ # Validate we have file caps
+ getfattr -d -m security.capability /usr/bin/newuidmap
++# Validate we don't have user.ostreemeta
++if getfattr -n user.ostreemeta /usr/bin/bash >/dev/null; then
++    echo "found user.ostreemeta"; exit 1
++fi
+ bootc container lint
+ EORUN
+ LABEL containers.bootc 1
+-- 
+2.48.1
+
