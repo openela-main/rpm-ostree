@@ -1,27 +1,44 @@
 # The canonical copy of this spec file is upstream at:
-# https://github.com/coreos/rpm-ostree/blob/main/packaging/rpm-ostree.spec.in
+# https://github.com/coreos/rpm-ostree/blob/main/packaging/rpm-ostree.spec
 
 Summary: Hybrid image/package system
 Name: rpm-ostree
-Version: 2024.9
+Version: 2025.5
 Release: 1%{?dist}
-License: LGPLv2+
+License: LGPL-2.0-or-later
 URL: https://github.com/coreos/rpm-ostree
 # This tarball is generated via "cd packaging && make -f Makefile.dist-packaging dist-snapshot"
 # in the upstream git.  It also contains vendored Rust sources.
 Source0: https://github.com/coreos/rpm-ostree/releases/download/v%{version}/rpm-ostree-%{version}.tar.xz
 
-ExclusiveArch: %{rust_arches}
+# See https://github.com/coreos/fedora-coreos-tracker/issues/1716
+# ostree not on i686 for RHEL 10
+# https://github.com/containers/composefs/pull/229#issuecomment-1838735764
+%if 0%{?fedora} || 0%{?rhel} >= 10
+ExcludeArch:    %{ix86}
+%endif
 
 BuildRequires: make
+%if 0%{?rhel}
+BuildRequires: rust-toolset
+%else
 BuildRequires: rust-packaging
 BuildRequires: cargo
 BuildRequires: rust
+%endif
 
 # Enable ASAN + UBSAN
 %bcond_with sanitizers
 # Embedded unit tests
 %bcond_with bin_unit_tests
+
+# Don't add the ostree-container binaries; this version
+# conditional needs to be kept in sync with the bootc one.
+%if 0%{?rhel} >= 10 || 0%{?fedora} > 41
+    %bcond_with ostree_ext
+%else
+    %bcond_without ostree_ext
+%endif
 
 # This is copied from the libdnf spec
 %if 0%{?rhel} && ! 0%{?centos}
@@ -56,6 +73,8 @@ BuildRequires: pkgconfig(libarchive)
 BuildRequires: pkgconfig(libsystemd)
 BuildRequires: libcap-devel
 BuildRequires: libattr-devel
+# Needed by the ostree-ext crate
+BuildRequires: libzstd-devel
 
 # We currently interact directly with librepo (libdnf below also pulls it in,
 # but duplicating to be clear)
@@ -126,11 +145,24 @@ Requires:       librepo%{?_isa} >= %{librepo_version}
 # rpm-ostree wraps more of ostree (such as `ostree admin unlock` etc.)
 Requires: ostree
 Requires: bubblewrap
+# We have been building with fuse but changed to fuse3  on:
+# https://src.fedoraproject.org/rpms/rpm-ostree/c/3c602a23787fd2df873c0b18df3133c9fec4b66a
+# However our code is just calling fuse's fusermount.
+# We are updating our spec and code based on the discusion on:
+# https://github.com/coreos/rpm-ostree/pull/5047
+%if %{defined rhel} && 0%{?rhel} < 10
 Requires: fuse
+%else
+Requires: fuse3
+%endif
 
 # For container functionality
 # https://github.com/coreos/rpm-ostree/issues/3286
-Recommends: skopeo
+Requires: skopeo
+Requires: bootc
+%if %{without ostree_ext}
+Requires: ostree-cli(ostree-container)
+%endif
 
 Requires: %{name}-libs%{?_isa} = %{version}-%{release}
 
@@ -156,7 +188,7 @@ Requires: %{name}-libs%{?_isa} = %{version}-%{release}
 The %{name}-devel package includes the header files for %{name}-libs.
 
 %prep
-%autosetup -Sgit -n %{name}-%{version}
+%autosetup -Sgit -n %{name}-%{version} -p1
 %if 0%{?__isa_bits} == 32
 sed -ie 's,^lto = true,lto = false,' Cargo.toml
 %endif
@@ -173,9 +205,19 @@ export RUSTFLAGS="%{build_rustflags}"
   %{?with_rhsm:--enable-featuresrs=rhsm}
 
 %make_build
+%if 0%{?fedora} || 0%{?rhel} >= 10
+%cargo_license_summary
+%{cargo_license} > LICENSE.dependencies
+%cargo_vendor_manifest
+# https://pagure.io/fedora-rust/rust-packaging/issue/33
+sed -i -e '/https:\/\//d' cargo-vendor.txt
+%endif
 
 %install
 %make_install INSTALL="install -p -c"
+%if %{without ostree_ext}
+rm -vrf $RPM_BUILD_ROOT/usr/libexec/libostree/ext
+%endif
 find $RPM_BUILD_ROOT -name '*.la' -delete
 
 # I try to do continuous delivery via rpmdistro-gitoverlay while
@@ -211,8 +253,11 @@ $PYTHON autofiles.py > files \
   '%{_datadir}/dbus-1/system.d/*' \
   '%{_sysconfdir}/rpm-ostreed.conf' \
   '%{_prefix}/lib/systemd/system/*' \
+  '%{_prefix}/lib/kernel/install.d/*' \
   '%{_libexecdir}/rpm-ostree*' \
+%if %{with ostree_ext}
   '%{_libexecdir}/libostree/ext/*' \
+%endif
   '%{_datadir}/polkit-1/actions/*.policy' \
   '%{_datadir}/dbus-1/system-services/*' \
   '%{_datadir}/bash-completion/completions/*'
@@ -229,28 +274,60 @@ $PYTHON autofiles.py > files.devel \
   '%{_datadir}/gtk-doc/html/*' \
   '%{_datadir}/gir-1.0/*-1.0.gir'
 
+# Setup rpm-ostree-countme.timer according to presets
 %post
+%systemd_post rpm-ostree-countme.timer
 # Only enable on rpm-ostree based systems and manually force unit enablement to
 # explicitly ignore presets for this security fix
 if [ -e /run/ostree-booted ]; then
     ln -snf /usr/lib/systemd/system/rpm-ostree-fix-shadow-mode.service  /usr/lib/systemd/system/multi-user.target.wants/
 fi
 
+%preun
+%systemd_preun rpm-ostree-countme.timer
+
+%postun
+%systemd_postun_with_restart rpm-ostree-countme.timer
+
 %files -f files
 %doc COPYING.GPL COPYING.LGPL LICENSE README.md
 
 %files libs -f files.lib
+%if 0%{?fedora} || 0%{?rhel} >= 10
+%license LICENSE.dependencies
+%license cargo-vendor.txt
+%endif
 
 %files devel -f files.devel
 
 %changelog
-* Thu Nov 21 2024 Joseph Marrero <jmarrero@fedoraproject.org> - 2024.9-1
+* Mon Feb 10 2025 Joseph Marrero <jmarrero@fedoraproject.org> - 2025.5-1
+- Rebase to 2025.5
+  Resolves: #RHEL-78697
+
+* Thu Jan 30 2025 Joseph Marrero <jmarrero@fedoraproject.org> - 2025.4-1
+- Rebase to 2025.4
+  Resolves: #RHEL-68131
+
+* Mon Jan 27 2025 Joseph Marrero <jmarrero@fedoraproject.org> - 2025.3-1
+- Rebase to 2025.3
+  Resolves: #RHEL-68131
+
+* Thu Jan 23 2025 Joseph Marrero <jmarrero@fedoraproject.org> - 2025.2-1
+- Rebase to 2025.2
+  Resolves: #RHEL-68131
+
+* Mon Jan 20 2025 Joseph Marrero <jmarrero@fedoraproject.org> - 2025.1-1
+- Rebase to 2025.1
+  Resolves: #RHEL-68131
+
+* Tue Nov 19 2024 Joseph Marrero <jmarrero@fedoraproject.org> - 2024.9-1
 - Rebase to 2024.9
-  Resolves: #RHEL-68144
+  Resolves: #RHEL-68131
 
 * Thu Oct 17 2024 Joseph Marrero <jmarrero@fedoraproject.org> - 2024.7-3
-- Backport https://github.com/coreos/rpm-ostree/pull/5114
-  Resolves: #RHEL-62652
+- Backport https://github.com/coreos/rpm-ostree/pull/5051
+  Resolves: #RHEL-59716
 
 * Thu Aug 15 2024 Joseph Marrero <jmarrero@fedoraproject.org> - 2024.7-2
 - Backport https://github.com/coreos/rpm-ostree/pull/5051
