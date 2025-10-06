@@ -1,0 +1,443 @@
+From cc8dde94a64cd608c0a2dd05775898d627aa3558 Mon Sep 17 00:00:00 2001
+From: Jonathan Lebon <jonathan@jlebon.com>
+Date: Fri, 28 Mar 2025 15:28:56 -0400
+Subject: [PATCH 1/5] treefile: Support inlined conditional includes
+
+In FCOS/RHCOS, we make extensive use of conditional includes but it gets
+cumbersome to always have to create tiny manifest files whenever we need
+to conditionalize something.
+
+Let's support the ability to directly inline treefiles.
+
+Closes: #3729
+---
+ docs/treefile.md     | 13 +++++++++++++
+ rust/src/treefile.rs | 37 ++++++++++++++++++++++++++++++++++---
+ 2 files changed, 47 insertions(+), 3 deletions(-)
+
+diff --git a/docs/treefile.md b/docs/treefile.md
+index 625c64f9..8c8a1dfb 100644
+--- a/docs/treefile.md
++++ b/docs/treefile.md
+@@ -437,6 +437,19 @@ It supports the following parameters:
+        include: f35-selinux-workaround.yaml
+     ```
+ 
++    Specifying a treefile spec inlined is also supported:
++
++    ```yaml
++    conditional-include:
++      - if: releasever >= 35
++        include:
++          packages:
++            - foobar
++    ```
++
++    Inlined treefiles do not support any options referring to external files
++    (e.g. `postprocess-script`, `add-files`, and `passwd`/`group`).
++
+  * `container`: boolean, optional: Defaults to `false`.  If `true`, then
+    rpm-ostree will not do any special handling of kernel, initrd or the
+    /boot directory. This is useful if the target for the tree is some kind
+diff --git a/rust/src/treefile.rs b/rust/src/treefile.rs
+index 9a36e202..80a86213 100644
+--- a/rust/src/treefile.rs
++++ b/rust/src/treefile.rs
+@@ -614,8 +614,11 @@ fn treefile_parse_recurse<P: AsRef<Path>>(
+             };
+             if matches {
+                 match conditional_include.include {
+-                    Include::Single(v) => includes.push(v),
+-                    Include::Multiple(v) => includes.extend(v),
++                    IncludeFilesOrInlined::Files(Include::Single(v)) => includes.push(v),
++                    IncludeFilesOrInlined::Files(Include::Multiple(v)) => includes.extend(v),
++                    IncludeFilesOrInlined::Inlined(mut t) => {
++                        treefile_merge(&mut parsed.config, &mut t);
++                    }
+                 }
+             }
+         }
+@@ -2179,11 +2182,18 @@ pub(crate) enum Include {
+     Multiple(Vec<String>),
+ }
+ 
++#[derive(Clone, Deserialize, Debug, PartialEq, Eq)]
++#[serde(untagged)]
++pub(crate) enum IncludeFilesOrInlined {
++    Files(Include),
++    Inlined(TreeComposeConfig),
++}
++
+ #[derive(Clone, Deserialize, Debug, PartialEq, Eq)]
+ pub(crate) struct ConditionalInclude {
+     #[serde(rename = "if")]
+     pub(crate) condition: IncludeConditions,
+-    pub(crate) include: Include,
++    pub(crate) include: IncludeFilesOrInlined,
+ }
+ 
+ #[derive(Clone, Deserialize, Debug, PartialEq, Eq)]
+@@ -3696,6 +3706,27 @@ conditional-include:
+         Ok(())
+     }
+ 
++    #[test]
++    fn test_treefile_conditional_inline() -> Result<()> {
++        let workdir = tempfile::tempdir()?;
++        let workdir: &Utf8Path = workdir.path().try_into().unwrap();
++        std::fs::write(workdir.join("foo.yaml"), "packages: [foo]")?;
++        let mut buf = VALID_PRELUDE.to_string();
++        buf.push_str(
++            r#"
++releasever: "35"
++conditional-include:
++    - if: releasever == "35"
++      include:
++        packages:
++          - inlinedpkg
++"#,
++        );
++        let tf = new_test_treefile(workdir, buf.as_str(), None)?;
++        assert_package(&tf, "inlinedpkg");
++        Ok(())
++    }
++
+     #[test]
+     fn test_treefile_conditional_include_errors() -> Result<()> {
+         let workdir = tempfile::tempdir()?;
+-- 
+2.49.0
+
+
+From 8adc299d48f57d241f29139314fe901ec94dc33b Mon Sep 17 00:00:00 2001
+From: Jonathan Lebon <jonathan@jlebon.com>
+Date: Mon, 31 Mar 2025 10:39:03 -0400
+Subject: [PATCH 2/5] treefile-apply: Add `--var` option
+
+When using `treefile-apply`, we want to be able to pass the same
+treefile when building for different versions. E.g. for FCOS, Fedora
+majors, and for openshift/os RHEL vs CentOS Stream (and 9 vs 10).
+
+So we'll be using conditional includes a lot as we currently do. But
+then what would be nice is to be able to set some of the variables at
+invocation time so that we don't have to make all these little wrapper
+treefiles that just set vars.
+
+I think a common pattern then will be e.g.
+
+```
+. /etc/os-release
+rpm-ostree experimental compose treefile-apply manifest.yaml --var ID=$ID
+```
+
+Tempting to directly add a e.g. `--var-from-os-release` to make that
+even easier, but let's stop here for now.
+---
+ rust/src/treefile.rs | 81 +++++++++++++++++++++++++++++++++++++++-----
+ 1 file changed, 72 insertions(+), 9 deletions(-)
+
+diff --git a/rust/src/treefile.rs b/rust/src/treefile.rs
+index 80a86213..2f59dd3d 100644
+--- a/rust/src/treefile.rs
++++ b/rust/src/treefile.rs
+@@ -646,9 +646,10 @@ fn treefile_parse_recurse<P: AsRef<Path>>(
+ fn treefile_parse_and_process<P: AsRef<Path>>(
+     filename: P,
+     basearch: Option<&str>,
++    variables: Option<BTreeMap<String, VarValue>>,
+ ) -> Result<ConfigAndExternals> {
+     let mut seen_includes = BTreeMap::new();
+-    let mut variables = BTreeMap::new();
++    let mut variables = variables.unwrap_or_default();
+     let mut parsed =
+         treefile_parse_recurse(filename, basearch, 0, &mut seen_includes, &mut variables)?;
+     event!(Level::DEBUG, "parsed successfully");
+@@ -675,11 +676,15 @@ fn add_files_path_is_valid(path: &str) -> bool {
+ impl Treefile {
+     /// The main treefile creation entrypoint.
+     #[instrument]
+-    fn new_boxed(filename: &Utf8Path, basearch: Option<&str>) -> Result<Box<Treefile>> {
++    fn new_boxed(
++        filename: &Utf8Path,
++        basearch: Option<&str>,
++        variables: Option<BTreeMap<String, VarValue>>,
++    ) -> Result<Box<Treefile>> {
+         let directory = utils::parent_dir_utf8(filename)
+             .ok_or_else(|| anyhow!("{} is not a file path", filename))
+             .map(|v| Some(v.to_owned()))?;
+-        let parsed = treefile_parse_and_process(filename, basearch)?;
++        let parsed = treefile_parse_and_process(filename, basearch, variables)?;
+         Ok(Box::new(Treefile {
+             directory,
+             parsed: parsed.config,
+@@ -3401,7 +3406,7 @@ pub(crate) mod tests {
+     ) -> Result<Box<Treefile>> {
+         let tf_path = &workdir.join("treefile.yaml");
+         std::fs::write(tf_path, contents)?;
+-        Treefile::new_boxed(tf_path, basearch)
++        Treefile::new_boxed(tf_path, basearch, None)
+     }
+ 
+     pub(crate) fn new_test_tf_basic(contents: impl AsRef<str>) -> Result<Box<Treefile>> {
+@@ -3511,6 +3516,16 @@ pub(crate) mod tests {
+             .any(|p| p == pkg));
+     }
+ 
++    fn assert_not_package(tf: &Treefile, pkg: &str) {
++        assert!(tf
++            .parsed
++            .packages
++            .as_ref()
++            .unwrap()
++            .iter()
++            .all(|p| p != pkg));
++    }
++
+     #[test]
+     fn test_treefile_arch_includes() -> Result<()> {
+         let workdir = tempfile::tempdir()?;
+@@ -3553,7 +3568,7 @@ arch-include:
+         std::fs::write(workdir.join("foo.ks"), BASIC_KS)?;
+         let ks_path = &workdir.join("test.ks");
+         std::fs::write(ks_path, BASIC_KS)?;
+-        let tf = Treefile::new_boxed(ks_path, None).unwrap();
++        let tf = Treefile::new_boxed(ks_path, None, None).unwrap();
+         let pkgs = tf.parsed.packages.as_ref().unwrap();
+         assert_eq!(pkgs.len(), 2);
+         assert!(pkgs.iter().any(|p| p.as_str() == "nushell"));
+@@ -3727,6 +3742,42 @@ conditional-include:
+         Ok(())
+     }
+ 
++    #[test]
++    fn test_treefile_initial_variables() -> Result<()> {
++        let workdir = tempfile::tempdir()?;
++        let workdir: &Utf8Path = workdir.path().try_into().unwrap();
++        std::fs::write(workdir.join("foo.yaml"), "packages: [foo]")?;
++        let mut buf = VALID_PRELUDE.to_string();
++        buf.push_str(
++            r#"
++conditional-include:
++    - if: foobar == "bazboo"
++      include:
++        packages:
++          - inlinedpkg
++"#,
++        );
++        let tf_path = &workdir.join("treefile.yaml");
++        std::fs::write(tf_path, buf)?;
++        let tf = Treefile::new_boxed(
++            tf_path,
++            None,
++            Some(maplit::btreemap!(
++                "foobar".into() => VarValue::String("nope".into()),
++            )),
++        )?;
++        assert_not_package(&tf, "inlinedpkg");
++        let tf = Treefile::new_boxed(
++            tf_path,
++            None,
++            Some(maplit::btreemap!(
++                "foobar".into() => VarValue::String("bazboo".into()),
++            )),
++        )?;
++        assert_package(&tf, "inlinedpkg");
++        Ok(())
++    }
++
+     #[test]
+     fn test_treefile_conditional_include_errors() -> Result<()> {
+         let workdir = tempfile::tempdir()?;
+@@ -4623,7 +4674,7 @@ fn raw_seeked_fd(fd: &mut std::fs::File) -> RawFd {
+ 
+ pub(crate) fn treefile_new(filename: &str, basearch: &str) -> CxxResult<Box<Treefile>> {
+     let basearch = opt_string(basearch);
+-    Ok(Treefile::new_boxed(filename.as_ref(), basearch)?)
++    Ok(Treefile::new_boxed(filename.as_ref(), basearch, None)?)
+ }
+ 
+ /// Create a new treefile from a string.
+@@ -4687,7 +4738,7 @@ pub(crate) fn treefile_new_client_from_etc(basearch: &str) -> CxxResult<Box<Tree
+     let mut tfs = iter_etc_treefiles()?.collect::<Result<Vec<PathBuf>>>()?;
+     tfs.sort(); // sort because order matters; later treefiles override earlier ones
+     for tf in tfs {
+-        let new_cfg = treefile_parse_and_process(tf, basearch)?;
++        let new_cfg = treefile_parse_and_process(tf, basearch, None)?;
+         new_cfg.config.base.error_if_nonempty()?;
+         new_cfg.externals.assert_empty();
+         let mut new_cfg = new_cfg.config;
+@@ -4715,12 +4766,24 @@ pub(crate) struct TreefileApplyOpts {
+     /// Path to the treefile.
+     #[clap(value_parser)]
+     treefile: Utf8PathBuf,
++    #[arg(long)]
++    var: Vec<String>,
+ }
+ 
+ impl TreefileApplyOpts {
+     pub(crate) fn run(self) -> Result<()> {
+-        let mut tf = Treefile::new_boxed(&self.treefile, Some(&utils::get_rpm_basearch()))
+-            .context("parsing treefile")?;
++        let vars = self
++            .var
++            .iter()
++            .map(|v| {
++                v.split_once('=')
++                    .ok_or_else(|| anyhow!("invalid variable: {}", v))
++                    .map(|(k, v)| (k.to_string(), VarValue::String(v.to_string())))
++            })
++            .collect::<Result<BTreeMap<String, VarValue>>>()?;
++        let mut tf =
++            Treefile::new_boxed(&self.treefile, Some(&utils::get_rpm_basearch()), Some(vars))
++                .context("parsing treefile")?;
+ 
+         // we only handle a subset of fields here
+         if let Some(packages) = &tf.parsed.packages {
+-- 
+2.49.0
+
+
+From da417a6fef4382ba1ac560ff888420f3e417ed09 Mon Sep 17 00:00:00 2001
+From: Jonathan Lebon <jonathan@jlebon.com>
+Date: Mon, 31 Mar 2025 10:39:04 -0400
+Subject: [PATCH 3/5] treefile-apply: Handle `repos` key
+
+We have this incredibly complex script in openshift/os whose sole
+purpose is downloading the repo files from OpenShift CI:
+
+https://github.com/openshift/os/blob/9bf1802a3b5d/ci/get-ocp-repo.sh
+
+The source of that complexity is that it's called for so many different
+purposes, with the expectation that it downloads and enables only the
+repos needed for each case.
+
+But this essentially duplicates the repo enablement knobs that already
+exist in the treefile (for base composes) and extensions manifest. The
+main gap then is the treefile used for layered node image builds.
+
+Add support for the `repos` key for this. If it's not set, use the
+default repo enablement. If it's set, override it.
+
+Note though that the model is still very much to use the repos from the
+default `/etc/yum.repos.d` location.
+---
+ ci/test-container.sh | 22 +++++++++++++++++++++-
+ rust/src/treefile.rs |  8 ++++++++
+ 2 files changed, 29 insertions(+), 1 deletion(-)
+
+diff --git a/ci/test-container.sh b/ci/test-container.sh
+index 534664d9..97fbd2b8 100755
+--- a/ci/test-container.sh
++++ b/ci/test-container.sh
+@@ -98,9 +98,29 @@ packages:
+   - ltrace
+   # a split base/layered version-locked package
+   - vim-enhanced
++# also test repo enablement but using variables so we don't have to rewrite a
++# new treefile each time
++conditional-include:
++  - if: addrepos == "disable"
++    include:
++      repos: []
++  - if: addrepos == "enable"
++    include:
++      repos: [fedora-cisco-openh264]
++      packages: [openh264-devel]
+ EOF
+-rpm-ostree experimental compose treefile-apply /tmp/treefile.yaml
++# setting `repos` to empty list; should fail
++if rpm-ostree experimental compose treefile-apply /tmp/treefile.yaml --var addrepos=disable; then
++  fatal "installed packages without enabled repos?"
++fi
++if rpm -q ltrace; then fatal "ltrace installed"; fi
++if rpm -q vim-enhanced-"$vim_vr"; then fatal "vim-enhanced installed"; fi
++# not setting repos; default enablement
++rpm-ostree experimental compose treefile-apply /tmp/treefile.yaml --var addrepos=
+ rpm -q ltrace vim-enhanced-"$vim_vr"
++# setting repos; only those repos enabled
++rpm-ostree experimental compose treefile-apply /tmp/treefile.yaml --var addrepos=enable
++rpm -q openh264-devel
+ 
+ rpm-ostree cliwrap install-to-root /
+ 
+diff --git a/rust/src/treefile.rs b/rust/src/treefile.rs
+index 2f59dd3d..587ba357 100644
+--- a/rust/src/treefile.rs
++++ b/rust/src/treefile.rs
+@@ -4804,6 +4804,14 @@ impl TreefileApplyOpts {
+                 None => {} // implicitly leave environment default if unset
+             }
+ 
++            if let Some(repos) = &tf.parsed.repos {
++                install_args.push("--disablerepo=*");
++                for repo in repos {
++                    install_args.push("--enablerepo");
++                    install_args.push(repo);
++                }
++            }
++
+             // lock all base packages during installation
+             // https://gitlab.com/fedora/bootc/tracker/-/issues/59
+             run_dnf("versionlock", &["add", "*", "--disablerepo", "*"])
+-- 
+2.49.0
+
+
+From fbded588276a0202d83f127687ed1d98502e0bc9 Mon Sep 17 00:00:00 2001
+From: Jonathan Lebon <jonathan@jlebon.com>
+Date: Mon, 31 Mar 2025 10:39:05 -0400
+Subject: [PATCH 4/5] treefile-apply: Enable versionlock plugin when running
+ dnf
+
+This is built-in in dnf5, but it's a plugin in dnf4.
+---
+ rust/src/treefile.rs | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/rust/src/treefile.rs b/rust/src/treefile.rs
+index 587ba357..74b5c5e2 100644
+--- a/rust/src/treefile.rs
++++ b/rust/src/treefile.rs
+@@ -4833,7 +4833,8 @@ impl TreefileApplyOpts {
+ fn run_dnf(command: &str, args: &[&str]) -> Result<()> {
+     let mut cmd = Command::new("dnf");
+     cmd.arg(command).args(args);
+-    cmd.arg("--noplugins");
++    cmd.arg("--disableplugin=*");
++    cmd.arg("--enableplugin=versionlock");
+     cmd.arg("-y");
+ 
+     let status = cmd.status().context("collecting dnf status")?;
+-- 
+2.49.0
+
+
+From ba90c5ba6c698fa2580cdfce1c694c9900e730bc Mon Sep 17 00:00:00 2001
+From: Jonathan Lebon <jonathan@jlebon.com>
+Date: Mon, 31 Mar 2025 10:39:06 -0400
+Subject: [PATCH 5/5] treefile-apply: Tweak `versionlock` hack
+
+Looks like in dnf4's version of this plugin, we need to explicitly
+disable all repos even for the `clear` subcommand even though it's not
+strictly necessary. Otherwise it'll download repo metadata, etc.
+---
+ rust/src/treefile.rs | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/rust/src/treefile.rs b/rust/src/treefile.rs
+index 74b5c5e2..1ea936bf 100644
+--- a/rust/src/treefile.rs
++++ b/rust/src/treefile.rs
+@@ -4817,7 +4817,8 @@ impl TreefileApplyOpts {
+             run_dnf("versionlock", &["add", "*", "--disablerepo", "*"])
+                 .context("locking base packages with dnf")?;
+             run_dnf("install", &install_args).context("installing packages with dnf")?;
+-            run_dnf("versionlock", &["clear"]).context("clearing base packages lock with dnf")?;
++            run_dnf("versionlock", &["clear", "--disablerepo", "*"])
++                .context("clearing base packages lock with dnf")?;
+         };
+ 
+         // handle postprocess scripts
+-- 
+2.49.0
+
