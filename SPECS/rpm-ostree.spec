@@ -3,7 +3,7 @@
 
 Summary: Hybrid image/package system
 Name: rpm-ostree
-Version: 2025.10
+Version: 2025.11
 Release: 1%{?dist}
 License: LGPL-2.0-or-later
 URL: https://github.com/coreos/rpm-ostree
@@ -301,6 +301,10 @@ fi
 %files devel -f files.devel
 
 %changelog
+* Wed Sep 10 2025 Joseph Marrero <jmarrero@fedoraproject.org> - 2025.11-1
+- Rebase to 2025.11
+  Resolves: #RHEL-113380
+
 * Thu Jul 31 2025 Joseph Marrero <jmarrero@fedoraproject.org> - 2025.10-1
 - Rebase to 2025.10
   Resolves: #RHEL-106848
