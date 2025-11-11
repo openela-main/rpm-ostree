@@ -3,19 +3,13 @@
 
 Summary: Hybrid image/package system
 Name: rpm-ostree
-Version: 2025.6
-Release: 5%{?dist}
+Version: 2025.10
+Release: 1%{?dist}
 License: LGPL-2.0-or-later
 URL: https://github.com/coreos/rpm-ostree
 # This tarball is generated via "cd packaging && make -f Makefile.dist-packaging dist-snapshot"
 # in the upstream git.  It also contains vendored Rust sources.
 Source0: https://github.com/coreos/rpm-ostree/releases/download/v%{version}/rpm-ostree-%{version}.tar.xz
-
-Patch0: 0001-compose-rootfs-Ensure-we-don-t-emit-user.ostreemeta.patch
-Patch1: 0002-vendor-2025-6-to-2025-7.patch
-Patch2: 0003-build-chunked-oci-Handle-multi-arch-perserve-labels.patch
-Patch3: 0004-cargo-config.patch
-Patch4: 0001-treefile-support-inlined-conditional-includes.patch
 
 # See https://github.com/coreos/fedora-coreos-tracker/issues/1716
 # ostree not on i686 for RHEL 10
@@ -40,7 +34,7 @@ BuildRequires: rust
 
 # Don't add the ostree-container binaries; this version
 # conditional needs to be kept in sync with the bootc one.
-%if 0%{?rhel} >= 10 || 0%{?fedora} > 41
+%if 0%{?rhel} >= 9 || 0%{?fedora} > 41
     %bcond_with ostree_ext
 %else
     %bcond_without ostree_ext
@@ -307,23 +301,42 @@ fi
 %files devel -f files.devel
 
 %changelog
-* Tue Apr 01 2025 Joseph Marrero <jmarrero@fedoraproject.org> - 2025.6-5
-- Backport: https://github.com/coreos/rpm-ostree/pull/5351
-  Resolves: #RHEL-85683
+* Thu Jul 31 2025 Joseph Marrero <jmarrero@fedoraproject.org> - 2025.10-1
+- Rebase to 2025.10
+  Resolves: #RHEL-106848
 
-* Fri Mar 28 2025 Joseph Marrero <jmarrero@fedoraproject.org> - 2025.6-4
-- Backport: https://github.com/coreos/rpm-ostree/pull/5343
-  Resolves: #RHEL-85391
+* Fri Jul 11 2025 Joseph Marrero <jmarrero@fedoraproject.org> - 2025.9-1
+- Rebase to 2025.9
+  Resolves: #RHEL-103135
+
+* Wed Jun 04 2025 Colin Walters <walters@verbum.org> - 2025.8-3
+- Move `ostree container` to bootc
+  Resolves: #RHEL-72863
+
+* Thu May 08 2025 Joseph Marrero <jmarrero@fedoraproject.org> - 2025.8-1
+- Rebase to 2025.8
+  Resolves: #RHEL-90254
+
+* Tue Apr 01 2025 Joseph Marrero <jmarrero@fedoraproject.org> - 2025.7-2
+- Backport https://github.com/coreos/rpm-ostree/pull/5351
+  Resolves: #RHEL-85684
+
+* Fri Mar 28 2025 Joseph Marrero <jmarrero@fedoraproject.org> - 2025.7-1
+- Rebase to 2025.7
+  Resolves: #RHEL-85392
+
+* Fri Mar 21 2025 Joseph Marrero <jmarrero@fedoraproject.org> - 2025.6-4
+- Backport: https://github.com/coreos/rpm-ostree/pull/5322
+  Backport: https://github.com/coreos/rpm-ostree/pull/5339
+  Resolves: #RHEL-84466
 
 * Fri Mar 21 2025 Joseph Marrero <jmarrero@fedoraproject.org> - 2025.6-3
-- Backport: https://github.com/coreos/rpm-ostree/pull/5341
-  Backport: https://github.com/coreos/rpm-ostree/pull/5322
-  Backport: https://github.com/coreos/rpm-ostree/pull/5339
-  Resolves: #RHEL-84465
+- Backport https://github.com/coreos/rpm-ostree/pull/5341
+  Resolves: #RHEL-84466
 
 * Mon Mar 03 2025 Colin Walters <walters@verbum.org> - 2025.6-2
 - Update to 2025.6
-  Resolves: #RHEL-82201
+  Resolves: #RHEL-76015
 
 * Mon Feb 10 2025 Joseph Marrero <jmarrero@fedoraproject.org> - 2025.5-1
 - Rebase to 2025.5
