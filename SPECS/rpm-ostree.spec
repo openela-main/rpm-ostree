@@ -4,12 +4,19 @@
 Summary: Hybrid image/package system
 Name: rpm-ostree
 Version: 2025.11
-Release: 1%{?dist}
+Release: 2%{?dist}
 License: LGPL-2.0-or-later
 URL: https://github.com/coreos/rpm-ostree
 # This tarball is generated via "cd packaging && make -f Makefile.dist-packaging dist-snapshot"
 # in the upstream git.  It also contains vendored Rust sources.
 Source0: https://github.com/coreos/rpm-ostree/releases/download/v%{version}/rpm-ostree-%{version}.tar.xz
+
+# Backport fix for G_MESSAGES_DEBUG corrupting ostree commit output
+# https://github.com/bootc-dev/bootc/pull/1917
+# https://github.com/coreos/rpm-ostree/pull/5553
+Patch0: 0001-ostree-ext-tar-Unset-G_MESSAGES_DEBUG-before-spawnin.patch
+# https://github.com/coreos/rpm-ostree/pull/5551
+Patch1: 0001-kernel-install-Support-drop-in-config-directories-fo.patch
 
 # See https://github.com/coreos/fedora-coreos-tracker/issues/1716
 # ostree not on i686 for RHEL 10
@@ -301,6 +308,12 @@ fi
 %files devel -f files.devel
 
 %changelog
+* Wed Jan 21 2026 Joseph Marrero <jmarrero@fedoraproject.org> - 2025.11-2
+- Backport https://github.com/bootc-dev/bootc/pull/1917
+  Backport https://github.com/coreos/rpm-ostree/pull/5551
+  Resolves: #RHEL-143209
+  Resolves: #RHEL-143216
+
 * Wed Sep 10 2025 Joseph Marrero <jmarrero@fedoraproject.org> - 2025.11-1
 - Rebase to 2025.11
   Resolves: #RHEL-113380
