@@ -3,20 +3,15 @@
 
 Summary: Hybrid image/package system
 Name: rpm-ostree
-Version: 2025.11
-Release: 2%{?dist}
+Version: 2026.1
+Release: 3%{?dist}
 License: LGPL-2.0-or-later
 URL: https://github.com/coreos/rpm-ostree
 # This tarball is generated via "cd packaging && make -f Makefile.dist-packaging dist-snapshot"
 # in the upstream git.  It also contains vendored Rust sources.
 Source0: https://github.com/coreos/rpm-ostree/releases/download/v%{version}/rpm-ostree-%{version}.tar.xz
 
-# Backport fix for G_MESSAGES_DEBUG corrupting ostree commit output
-# https://github.com/bootc-dev/bootc/pull/1917
-# https://github.com/coreos/rpm-ostree/pull/5553
-Patch0: 0001-ostree-ext-tar-Unset-G_MESSAGES_DEBUG-before-spawnin.patch
-# https://github.com/coreos/rpm-ostree/pull/5551
-Patch1: 0001-kernel-install-Support-drop-in-config-directories-fo.patch
+Patch0: 0001-rpmostreed-transaction-types-fix-override-reset.patch
 
 # See https://github.com/coreos/fedora-coreos-tracker/issues/1716
 # ostree not on i686 for RHEL 10
@@ -113,7 +108,7 @@ BuildRequires: jq
 
 %global libsolv_version 0.7.21
 %global libmodulemd_version 2.13.0
-%global librepo_version 1.13.1
+%global librepo_version 1.18.0
 
 BuildRequires:  cmake
 BuildRequires:  gcc
@@ -136,11 +131,13 @@ BuildRequires:  pkgconfig(cppunit)
 BuildRequires:  pkgconfig(modulemd-2.0) >= %{libmodulemd_version}
 BuildRequires:  pkgconfig(smartcols)
 BuildRequires:  gettext
-BuildRequires:  gpgme-devel
 
 Requires:       libmodulemd%{?_isa} >= %{libmodulemd_version}
 Requires:       libsolv%{?_isa} >= %{libsolv_version}
 Requires:       librepo%{?_isa} >= %{librepo_version}
+%if 0%{?fedora} >= 43 || 0%{?rhel} >= 11
+Requires:       rpm-libs%{?_isa} >= 5.99.90
+%endif
 
 #########################################################################
 #                     end of libdnf build deps                          #
@@ -308,15 +305,22 @@ fi
 %files devel -f files.devel
 
 %changelog
-* Wed Jan 21 2026 Joseph Marrero <jmarrero@fedoraproject.org> - 2025.11-2
-- Backport https://github.com/bootc-dev/bootc/pull/1917
-  Backport https://github.com/coreos/rpm-ostree/pull/5551
-  Resolves: #RHEL-143209
-  Resolves: #RHEL-143216
+* Thu Feb 05 2026 Joseph Marrero <jmarrero@fedoraproject.org> - 2026.1-3
+- Backport https://github.com/coreos/rpm-ostree/pull/5558
+  Resolves: RHEL-147222
+
+* Tue Jan 27 2026 Joseph Marrero <jmarrero@fedoraproject.org> - 2026.1-2
+- Revert conditional change for ostree_ext
+  Resolves: RHEL-144611
+
+* Thu Jan 22 2026 Joseph Marrero <jmarrero@fedoraproject.org> - 2026.1-1
+- Rebase to 2026.1
+  Resolves: RHEL-143217
+  Resolves: RHEL-143210
 
 * Wed Sep 10 2025 Joseph Marrero <jmarrero@fedoraproject.org> - 2025.11-1
 - Rebase to 2025.11
-  Resolves: #RHEL-113380
+  Resolves: #RHEL-113381
 
 * Thu Jul 31 2025 Joseph Marrero <jmarrero@fedoraproject.org> - 2025.10-1
 - Rebase to 2025.10
