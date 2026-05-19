@@ -4,7 +4,7 @@
 Summary: Hybrid image/package system
 Name: rpm-ostree
 Version: 2026.1
-Release: 3%{?dist}
+Release: 6%{?dist}
 License: LGPL-2.0-or-later
 URL: https://github.com/coreos/rpm-ostree
 # This tarball is generated via "cd packaging && make -f Makefile.dist-packaging dist-snapshot"
@@ -12,6 +12,8 @@ URL: https://github.com/coreos/rpm-ostree
 Source0: https://github.com/coreos/rpm-ostree/releases/download/v%{version}/rpm-ostree-%{version}.tar.xz
 
 Patch0: 0001-rpmostreed-transaction-types-fix-override-reset.patch
+Patch1: 0001-Fix-silent-upgrade-failure-on-container-systems.patch
+Patch2: 0001-deploy-Print-status-message-on-container-early-retur.patch
 
 # See https://github.com/coreos/fedora-coreos-tracker/issues/1716
 # ostree not on i686 for RHEL 10
@@ -305,6 +307,19 @@ fi
 %files devel -f files.devel
 
 %changelog
+
+* Fri Mar 20 2026 Joseph Marrero <jmarrero@fedoraproject.org> - 2026.1-6
+- Backport: https://github.com/coreos/rpm-ostree/pull/5575
+  Resolves: RHEL-154807
+
+* Mon Mar 16 2026 Joseph Marrero <jmarrero@fedoraproject.org> - 2026.1-5
+- Rebuilt for RHEL 9.8
+  Resolves: RHEL-154807
+
+* Tue Mar 10 2026 Joseph Marrero <jmarrero@fedoraproject.org> - 2026.1-4
+- Backport https://github.com/coreos/rpm-ostree/pull/5569
+  Resolves: RHEL-154808
+
 * Thu Feb 05 2026 Joseph Marrero <jmarrero@fedoraproject.org> - 2026.1-3
 - Backport https://github.com/coreos/rpm-ostree/pull/5558
   Resolves: RHEL-147222
