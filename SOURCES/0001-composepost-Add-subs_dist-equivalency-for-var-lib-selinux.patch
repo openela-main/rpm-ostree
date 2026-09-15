@@ -1,0 +1,58 @@
+From ccb589287e08b3a1b98b1d655f519c75a7b3afbc Mon Sep 17 00:00:00 2001
+From: Joseph Marrero Corchado <jmarrero@redhat.com>
+Date: Mon, 20 Jul 2026 15:59:19 -0400
+Subject: [PATCH] composepost: Add subs_dist equivalency for /var/lib/selinux
+
+Since PR #5572, a tmpfiles.d symlink /var/lib/selinux -> ../../etc/selinux
+is created at boot. Without a corresponding file_contexts.subs_dist entry,
+SELinux label lookups through the old /var/lib/selinux path hit the
+catch-all rule (/var/lib/selinux(/.*)? -> semanage_store_t) instead of
+the more specific /etc/selinux rules. This causes AVC denials when
+daemons like dbus-broker-launch traverse the symlink to access
+contexts/dbus_contexts.
+
+Add /var/lib/selinux /etc/selinux to subs_dist so that label lookups
+through the symlink path are substituted to the canonical /etc/selinux
+path, matching the correct file_contexts rules.
+
+Closes: https://github.com/coreos/rpm-ostree/issues/5616
+---
+ rust/src/composepost.rs        | 8 ++++++++
+ tests/compose/libbasic-test.sh | 2 ++
+ 2 files changed, 10 insertions(+)
+
+diff --git a/rust/src/composepost.rs b/rust/src/composepost.rs
+index a0e9e219e2..c1feb73789 100644
+--- a/rust/src/composepost.rs
++++ b/rust/src/composepost.rs
+@@ -419,6 +419,14 @@ fn postprocess_subs_dist(rootfs_dfd: &Dir) -> Result<()> {
+                 }
+                 writeln!(w, "# https://github.com/coreos/rpm-ostree/pull/1795")?;
+                 writeln!(w, "/usr/lib/opt /opt")?;
++                // The SELinux policy store is moved from /var/lib/selinux to
++                // /etc/selinux (see postprocess_selinux_policy_store_location),
++                // and a compatibility symlink is created via tmpfiles.d. Add an
++                // equivalency rule so that label lookups through the old path
++                // resolve correctly.
++                // https://github.com/coreos/rpm-ostree/issues/5616
++                writeln!(w, "# https://github.com/coreos/rpm-ostree/issues/5616")?;
++                writeln!(w, "/var/lib/selinux /etc/selinux")?;
+                 Ok(())
+             })?;
+         }
+diff --git a/tests/compose/libbasic-test.sh b/tests/compose/libbasic-test.sh
+index 9b8f21663d..e26e9826cb 100644
+--- a/tests/compose/libbasic-test.sh
++++ b/tests/compose/libbasic-test.sh
+@@ -38,6 +38,8 @@ ostree --repo=${repo} cat ${treeref} \
+   /usr/etc/selinux/targeted/contexts/files/file_contexts.subs_dist > subs_dist.txt
+ assert_not_file_has_content subs_dist.txt '^/var/home \+'
+ assert_file_has_content subs_dist.txt '^/home \+/var/home$'
++# https://github.com/coreos/rpm-ostree/issues/5616
++assert_file_has_content subs_dist.txt '^/var/lib/selinux \+/etc/selinux$'
+ echo "ok etc/default/useradd"
+ 
+ for path in /usr/share/rpm /usr/lib/sysimage/rpm-ostree-base-db; do
+-- 
+2.49.0
+
